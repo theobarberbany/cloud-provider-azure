@@ -207,3 +207,9 @@ deploy: image push
 .PHONY: release-staging
 release-staging:
 	ENABLE_GIT_COMMANDS=false IMAGE_REGISTRY=$(STAGING_REGISTRY) $(MAKE) build-images push-images
+
+## --------------------------------------
+## Openshift specific include
+## --------------------------------------
+
+include openshift.mk
