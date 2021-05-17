@@ -14,17 +14,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set -euo pipefail
+set -o errexit
+set -o nounset
+set -o pipefail
 
-if [[ -z "$(command -v golangci-lint)" ]]; then
-  echo "Cannot find golangci-lint. Installing golangci-lint..."
-  go install -mod=readonly github.com/golangci/golangci-lint/cmd/golangci-lint@v1.45.0
-  export PATH=$PATH:$(go env GOPATH)/bin
-fi
-
-echo "Verifying golint"
-readonly PKG_ROOT="$(git rev-parse --show-toplevel)"
-
-golangci-lint run -v --config ${PKG_ROOT}/.golangci.yml
-
-echo "Congratulations! Lint check completed for all Go source files."
+DIR_LIST=$(go list ./... | grep -v tests/e2e)
+for DIR in $DIR_LIST
+do
+  go test -v "$DIR"
+done
