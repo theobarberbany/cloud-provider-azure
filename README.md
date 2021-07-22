@@ -1,6 +1,7 @@
 # Cloud provider for Azure
 
 [![Go Report Card](https://goreportcard.com/badge/sigs.k8s.io/cloud-provider-azure)](https://goreportcard.com/report/sigs.k8s.io/cloud-provider-azure)
+[![Coverage Status](https://coveralls.io/repos/github/kubernetes-sigs/cloud-provider-azure/badge.svg?branch=master)](https://coveralls.io/github/kubernetes-sigs/cloud-provider-azure?branch=master)
 [![GitHub stars](https://img.shields.io/github/stars/kubernetes-sigs/cloud-provider-azure.svg)](https://github.com/kubernetes-sigs/cloud-provider-azure/stargazers)
 [![GitHub stars](https://img.shields.io/badge/contributions-welcome-orange.svg)](https://github.com/kubernetes-sigs/cloud-provider-azure/blob/master/CONTRIBUTING.md)
 
@@ -10,19 +11,20 @@ This repository provides Azure implementation of Kubernetes cloud provider [inte
 
 ## Current status
 
-cloud-provider-azure is under **Beta** stage and its releases are maintained on Microsoft Container Registry (MCR).
+`cloud-provider-azure` has been **GA** since v1.0.0 and its releases are maintained on Microsoft Container Registry (MCR).
 
 The latest version of azure-cloud-controller-manager and azure-cloud-node-manager could be found at
 
-* `mcr.microsoft.com/oss/kubernetes/azure-cloud-controller-manager:v0.7.4`
-* `mcr.microsoft.com/oss/kubernetes/azure-cloud-node-manager:v0.7.4`
+* `mcr.microsoft.com/oss/kubernetes/azure-cloud-controller-manager:v1.0.3`
+* `mcr.microsoft.com/oss/kubernetes/azure-cloud-node-manager:v1.0.3`
 
 Version matrix:
 
 |Kubernetes version|cloud-provider version|cloud-provider branch|
 |------------------|----------------------|---------------------|
 | master           | N/A                  | master              |
-| v1.20.x          | v0.7.4               | release-0.7         |
+| v1.21.x          | v1.0.3               | release-1.0         |
+| v1.20.x          | v0.7.6               | release-0.7         |
 | v1.19.x          | v0.6.0               | release-0.6         |
 | v1.18.x          | v0.5.1               | release-0.5         |
 | v1.17.x          | v0.4.1               | N/A                 |
@@ -35,12 +37,6 @@ Build azure-cloud-controller-manager with pure make:
 
 ```sh
 make
-```
-
-or with bazel:
-
-```sh
-make bazel-build
 ```
 
 Build docker image for azure-cloud-controller-manager:
@@ -79,14 +75,14 @@ Please check the following documents for e2e tests:
 
 ## Documentation
 
-- [Dependency management]([docs/dependency-management.md](http://kubernetes-sigs.github.io/cloud-provider-azure/development/dependencies/))
+- [Dependency management](http://kubernetes-sigs.github.io/cloud-provider-azure/development/dependencies/)
 - [Cloud provider config](http://kubernetes-sigs.github.io/cloud-provider-azure/install/configs/)
 - [Azure load balancer and annotations](http://kubernetes-sigs.github.io/cloud-provider-azure/topics/loadbalancer/)
 - [Azure permissions](http://kubernetes-sigs.github.io/cloud-provider-azure/topics/azure-permissions/)
 - [Azure availability zones](http://kubernetes-sigs.github.io/cloud-provider-azure/topics/availability-zones/)
-- [Cross resource group nodes]([docs/using-cross-resource-group-nodes.md](http://kubernetes-sigs.github.io/cloud-provider-azure/topics/cross-resource-group-nodes/))
-- [AzureDisk known issues]([docs/persistentvolumes/azuredisk/issues.md](http://kubernetes-sigs.github.io/cloud-provider-azure/faq/known-issues/azuredisk/))
-- [AzureFile known issues]([docs/persistentvolumes/azurefile/issues.md](http://kubernetes-sigs.github.io/cloud-provider-azure/faq/known-issues/azurefile/))
+- [Cross resource group nodes](http://kubernetes-sigs.github.io/cloud-provider-azure/topics/cross-resource-group-nodes/)
+- [AzureDisk known issues](http://kubernetes-sigs.github.io/cloud-provider-azure/faq/known-issues/azuredisk/)
+- [AzureFile known issues](http://kubernetes-sigs.github.io/cloud-provider-azure/faq/known-issues/azurefile/)
 
 See [kubernetes-sigs.github.io/cloud-provider-azure](https://kubernetes-sigs.github.io/cloud-provider-azure/) for more documentations.
 

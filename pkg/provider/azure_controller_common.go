@@ -37,7 +37,6 @@ import (
 
 	azcache "sigs.k8s.io/cloud-provider-azure/pkg/cache"
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
-	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
 )
 
 const (
@@ -145,41 +144,38 @@ func (c *controllerCommon) getNodeVMSet(nodeName types.NodeName, crt azcache.Azu
 
 // AttachDisk attaches a vhd to vm. The vhd must exist, can be identified by diskName, diskURI.
 // return (lun, error)
-func (c *controllerCommon) AttachDisk(isManagedDisk bool, diskName, diskURI string, nodeName types.NodeName, cachingMode compute.CachingTypes) (int32, error) {
+func (c *controllerCommon) AttachDisk(isManagedDisk bool, diskName, diskURI string, nodeName types.NodeName,
+	cachingMode compute.CachingTypes, disk *compute.Disk) (int32, error) {
 	diskEncryptionSetID := ""
 	writeAcceleratorEnabled := false
 
-	vmset, err := c.getNodeVMSet(nodeName, azcache.CacheReadTypeUnsafe)
-	if err != nil {
-		return -1, err
-	}
-
-	if isManagedDisk {
-		diskName := path.Base(diskURI)
-		resourceGroup, err := getResourceGroupFromDiskURI(diskURI)
-		if err != nil {
-			return -1, err
-		}
-
-		ctx, cancel := getContextWithCancel()
-		defer cancel()
-
-		disk, rerr := c.cloud.DisksClient.Get(ctx, resourceGroup, diskName)
-		if rerr != nil {
-			return -1, rerr.Error()
-		}
-
+	// there is possibility that disk is nil when GetDisk is throttled
+	// don't check disk state when GetDisk is throttled
+	if disk != nil {
 		if disk.ManagedBy != nil && (disk.MaxShares == nil || *disk.MaxShares <= 1) {
-			attachErr := fmt.Sprintf(
-				"disk(%s) already attached to node(%s), could not be attached to node(%s)",
-				diskURI, *disk.ManagedBy, nodeName)
+			vmset, err := c.getNodeVMSet(nodeName, azcache.CacheReadTypeUnsafe)
+			if err != nil {
+				return -1, err
+			}
 			attachedNode, err := vmset.GetNodeNameByProviderID(*disk.ManagedBy)
 			if err != nil {
 				return -1, err
 			}
-			klog.V(2).Infof("found dangling volume %s attached to node %s", diskURI, attachedNode)
-			danglingErr := volerr.NewDanglingError(attachErr, attachedNode, "")
-			return -1, danglingErr
+			if strings.EqualFold(string(nodeName), string(attachedNode)) {
+				err := fmt.Errorf("volume %q is actually attached to current node %q, invalidate vm cache and return error", diskURI, nodeName)
+				klog.Warningf("%v", err)
+				// update VM(invalidate vm cache)
+				if errUpdate := c.UpdateVM(nodeName); errUpdate != nil {
+					return -1, errUpdate
+				}
+				return -1, err
+			}
+
+			attachErr := fmt.Sprintf(
+				"disk(%s) already attached to node(%s), could not be attached to node(%s)",
+				diskURI, *disk.ManagedBy, nodeName)
+			klog.V(2).Infof("found dangling volume %s attached to node %s, could not be attached to node(%s)", diskURI, attachedNode, nodeName)
+			return -1, volerr.NewDanglingError(attachErr, attachedNode, "")
 		}
 
 		if disk.DiskProperties != nil {
@@ -217,8 +213,8 @@ func (c *controllerCommon) AttachDisk(isManagedDisk bool, diskName, diskURI stri
 		writeAcceleratorEnabled: writeAcceleratorEnabled,
 	}
 	node := strings.ToLower(string(nodeName))
-	disk := strings.ToLower(diskURI)
-	if err := c.insertAttachDiskRequest(disk, node, &options); err != nil {
+	diskuri := strings.ToLower(diskURI)
+	if err := c.insertAttachDiskRequest(diskuri, node, &options); err != nil {
 		return -1, err
 	}
 
@@ -229,7 +225,7 @@ func (c *controllerCommon) AttachDisk(isManagedDisk bool, diskName, diskURI stri
 		return -1, err
 	}
 
-	lun, err := c.SetDiskLun(nodeName, disk, diskMap)
+	lun, err := c.SetDiskLun(nodeName, diskuri, diskMap)
 	if err != nil {
 		return -1, err
 	}
@@ -237,6 +233,11 @@ func (c *controllerCommon) AttachDisk(isManagedDisk bool, diskName, diskURI stri
 	klog.V(2).Infof("Trying to attach volume %q lun %d to node %q, diskMap: %s", diskURI, lun, nodeName, diskMap)
 	if len(diskMap) == 0 {
 		return lun, nil
+	}
+
+	vmset, err := c.getNodeVMSet(nodeName, azcache.CacheReadTypeUnsafe)
+	if err != nil {
+		return -1, err
 	}
 	c.diskStateMap.Store(disk, "attaching")
 	defer c.diskStateMap.Delete(disk)
@@ -300,11 +301,6 @@ func (c *controllerCommon) DetachDisk(diskName, diskURI string, nodeName types.N
 		return fmt.Errorf("failed to get azure instance id for node %q: %w", nodeName, err)
 	}
 
-	vmset, err := c.getNodeVMSet(nodeName, azcache.CacheReadTypeUnsafe)
-	if err != nil {
-		return err
-	}
-
 	node := strings.ToLower(string(nodeName))
 	disk := strings.ToLower(diskURI)
 	if err := c.insertDetachDiskRequest(diskName, disk, node); err != nil {
@@ -320,6 +316,10 @@ func (c *controllerCommon) DetachDisk(diskName, diskURI string, nodeName types.N
 
 	klog.V(2).Infof("Trying to detach volume %q from node %q, diskMap: %s", diskURI, nodeName, diskMap)
 	if len(diskMap) > 0 {
+		vmset, errVMSet := c.getNodeVMSet(nodeName, azcache.CacheReadTypeUnsafe)
+		if errVMSet != nil {
+			return errVMSet
+		}
 		c.diskStateMap.Store(disk, "detaching")
 		defer c.diskStateMap.Delete(disk)
 		if err = vmset.DetachDisk(nodeName, diskMap); err != nil {
@@ -329,16 +329,9 @@ func (c *controllerCommon) DetachDisk(diskName, diskURI string, nodeName types.N
 					err, diskURI)
 				return nil
 			}
-			if retry.IsErrorRetriable(err) && c.cloud.CloudProviderBackoff {
-				klog.Warningf("azureDisk - update backing off: detach disk(%s, %s), err: %w", diskName, diskURI, err)
-				err = vmset.DetachDisk(nodeName, diskMap)
-			}
+			klog.Errorf("azureDisk - detach disk(%s, %s) failed, err: %v", diskName, diskURI, err)
+			return err
 		}
-	}
-
-	if err != nil {
-		klog.Errorf("azureDisk - detach disk(%s, %s) failed, err: %v", diskName, diskURI, err)
-		return err
 	}
 
 	klog.V(2).Infof("azureDisk - detach disk(%s, %s) succeeded", diskName, diskURI)
@@ -440,7 +433,7 @@ func (c *controllerCommon) GetDiskLun(diskName, diskURI string, nodeName types.N
 // SetDiskLun find unused luns and allocate lun for every disk in diskMap.
 // Return lun of diskURI, -1 if all luns are used.
 func (c *controllerCommon) SetDiskLun(nodeName types.NodeName, diskURI string, diskMap map[string]*AttachDiskOptions) (int32, error) {
-	disks, _, err := c.getNodeDataDisks(nodeName, azcache.CacheReadTypeForceRefresh)
+	disks, _, err := c.getNodeDataDisks(nodeName, azcache.CacheReadTypeDefault)
 	if err != nil {
 		klog.Errorf("error of getting data disks for node %q: %v", nodeName, err)
 		return -1, err

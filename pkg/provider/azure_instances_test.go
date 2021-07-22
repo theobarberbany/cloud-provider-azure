@@ -25,7 +25,7 @@ import (
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2020-08-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -76,10 +76,20 @@ func setTestVirtualMachines(c *Cloud, vmList map[string]string, isDataDisksFull 
 			},
 		}
 		if !isDataDisksFull {
-			vm.StorageProfile.DataDisks = &[]compute.DataDisk{{
-				Lun:  to.Int32Ptr(0),
-				Name: to.StringPtr("disk1"),
-			}}
+			vm.StorageProfile.DataDisks = &[]compute.DataDisk{
+				{
+					Lun:  to.Int32Ptr(0),
+					Name: to.StringPtr("disk1"),
+				},
+				{
+					Lun:  to.Int32Ptr(1),
+					Name: to.StringPtr("disk2"),
+				},
+				{
+					Lun:  to.Int32Ptr(2),
+					Name: to.StringPtr("disk3"),
+				},
+			}
 		} else {
 			dataDisks := make([]compute.DataDisk, maxLUN)
 			for i := 0; i < maxLUN; i++ {
