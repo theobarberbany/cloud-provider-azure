@@ -19,6 +19,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"path"
 	"strconv"
 	"strings"
@@ -71,6 +72,14 @@ type ManagedDiskOptions struct {
 	MaxShares int32
 	// Logical sector size in bytes for Ultra disks
 	LogicalSectorSize int32
+	// SkipGetDiskOperation indicates whether skip GetDisk operation(mainly due to throttling)
+	SkipGetDiskOperation bool
+	// NetworkAccessPolicy - Possible values include: 'AllowAll', 'AllowPrivate', 'DenyAll'
+	NetworkAccessPolicy compute.NetworkAccessPolicy
+	// DiskAccessID - ARM id of the DiskAccess resource for using private endpoints on disks.
+	DiskAccessID *string
+	// BurstingEnabled - Set to true to enable bursting beyond the provisioned performance target of the disk.
+	BurstingEnabled *bool
 }
 
 //CreateManagedDisk : create managed disk
@@ -107,8 +116,23 @@ func (c *ManagedDiskController) CreateManagedDisk(options *ManagedDiskOptions) (
 		return "", err
 	}
 	diskProperties := compute.DiskProperties{
-		DiskSizeGB:   &diskSizeGB,
-		CreationData: &creationData,
+		DiskSizeGB:      &diskSizeGB,
+		CreationData:    &creationData,
+		BurstingEnabled: options.BurstingEnabled,
+	}
+
+	if options.NetworkAccessPolicy != "" {
+		diskProperties.NetworkAccessPolicy = options.NetworkAccessPolicy
+		if options.NetworkAccessPolicy == compute.AllowPrivate {
+			if options.DiskAccessID == nil {
+				return "", fmt.Errorf("DiskAccessID should not be empty when NetworkAccessPolicy is AllowPrivate")
+			}
+			diskProperties.DiskAccessID = options.DiskAccessID
+		} else {
+			if options.DiskAccessID != nil {
+				return "", fmt.Errorf("DiskAccessID(%s) must be empty when NetworkAccessPolicy(%s) is not AllowPrivate", *options.DiskAccessID, options.NetworkAccessPolicy)
+			}
+		}
 	}
 
 	if diskSku == compute.UltraSSDLRS {
@@ -186,36 +210,43 @@ func (c *ManagedDiskController) CreateManagedDisk(options *ManagedDiskOptions) (
 		options.ResourceGroup = c.common.resourceGroup
 	}
 
+	cloud := c.common.cloud
 	ctx, cancel := getContextWithCancel()
 	defer cancel()
-	rerr := c.common.cloud.DisksClient.CreateOrUpdate(ctx, options.ResourceGroup, options.DiskName, model)
+	rerr := cloud.DisksClient.CreateOrUpdate(ctx, options.ResourceGroup, options.DiskName, model)
 	if rerr != nil {
 		return "", rerr.Error()
 	}
 
-	diskID := ""
+	diskID := fmt.Sprintf(managedDiskPath, cloud.subscriptionID, options.ResourceGroup, options.DiskName)
 
-	err = kwait.ExponentialBackoff(defaultBackOff, func() (bool, error) {
-		provisionState, id, err := c.GetDisk(options.ResourceGroup, options.DiskName)
-		diskID = id
-		// We are waiting for provisioningState==Succeeded
-		// We don't want to hand-off managed disks to k8s while they are
-		//still being provisioned, this is to avoid some race conditions
-		if err != nil {
-			return false, err
-		}
-		if strings.ToLower(provisionState) == "succeeded" {
-			return true, nil
-		}
-		return false, nil
-	})
-
-	if err != nil {
-		klog.V(2).Infof("azureDisk - created new MD Name:%s StorageAccountType:%s Size:%v but was unable to confirm provisioningState in poll process", options.DiskName, options.StorageAccountType, options.SizeGB)
+	if options.SkipGetDiskOperation {
+		klog.Warningf("azureDisk - GetDisk(%s, StorageAccountType:%s) is throttled, unable to confirm provisioningState in poll process", options.DiskName, options.StorageAccountType)
 	} else {
-		klog.V(2).Infof("azureDisk - created new MD Name:%s StorageAccountType:%s Size:%v", options.DiskName, options.StorageAccountType, options.SizeGB)
+		err = kwait.ExponentialBackoff(defaultBackOff, func() (bool, error) {
+			provisionState, id, err := c.GetDisk(options.ResourceGroup, options.DiskName)
+			if err == nil {
+				if id != "" {
+					diskID = id
+				}
+			} else {
+				// We are waiting for provisioningState==Succeeded
+				// We don't want to hand-off managed disks to k8s while they are
+				//still being provisioned, this is to avoid some race conditions
+				return false, err
+			}
+			if strings.ToLower(provisionState) == "succeeded" {
+				return true, nil
+			}
+			return false, nil
+		})
+
+		if err != nil {
+			klog.Warningf("azureDisk - created new MD Name:%s StorageAccountType:%s Size:%v but was unable to confirm provisioningState in poll process", options.DiskName, options.StorageAccountType, options.SizeGB)
+		}
 	}
 
+	klog.V(2).Infof("azureDisk - created new MD Name:%s StorageAccountType:%s Size:%v", options.DiskName, options.StorageAccountType, options.SizeGB)
 	return diskID, nil
 }
 
@@ -236,6 +267,10 @@ func (c *ManagedDiskController) DeleteManagedDisk(diskURI string) error {
 
 	disk, rerr := c.common.cloud.DisksClient.Get(ctx, resourceGroup, diskName)
 	if rerr != nil {
+		if rerr.HTTPStatusCode == http.StatusNotFound {
+			klog.V(2).Infof("azureDisk - disk(%s) is already deleted", diskURI)
+			return nil
+		}
 		return rerr.Error()
 	}
 
