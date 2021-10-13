@@ -17,8 +17,11 @@ limitations under the License.
 package provider
 
 import (
+	"context"
+
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
+	"github.com/Azure/go-autorest/autorest/azure"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -68,17 +71,23 @@ type VMSet interface {
 	EnsureBackendPoolDeletedFromVMSets(vmSetNamesMap map[string]bool, backendPoolID string) error
 
 	// AttachDisk attaches a disk to vm
-	AttachDisk(nodeName types.NodeName, diskMap map[string]*AttachDiskOptions) error
+	AttachDisk(nodeName types.NodeName, diskMap map[string]*AttachDiskOptions) (*azure.Future, error)
 	// DetachDisk detaches a disk from vm
 	DetachDisk(nodeName types.NodeName, diskMap map[string]string) error
+	// WaitForUpdateResult waits for the response of the update request
+	WaitForUpdateResult(ctx context.Context, future *azure.Future, resourceGroupName, source string) error
+
 	// GetDataDisks gets a list of data disks attached to the node.
-	GetDataDisks(nodeName types.NodeName, string azcache.AzureCacheReadType) ([]compute.DataDisk, *string, error)
+	GetDataDisks(nodeName types.NodeName, crt azcache.AzureCacheReadType) ([]compute.DataDisk, *string, error)
 
 	// UpdateVM updates a vm
 	UpdateVM(nodeName types.NodeName) error
 
-	// GetPowerStatusByNodeName returns the power state of the specified node.
+	// GetPowerStatusByNodeName returns the powerState for the specified node.
 	GetPowerStatusByNodeName(name string) (string, error)
+
+	// GetProvisioningStateByNodeName returns the provisioningState for the specified node.
+	GetProvisioningStateByNodeName(name string) (string, error)
 
 	// GetPrivateIPsByNodeName returns a slice of all private ips assigned to node (ipv6 and ipv4)
 	GetPrivateIPsByNodeName(name string) ([]string, error)

@@ -146,11 +146,11 @@ spec:
       effect: NoSchedule
   containers:
     - name: cloud-controller-manager
-      image: mcr.microsoft.com/oss/kubernetes/azure-cloud-controller-manager:v1.0.1
+      image: mcr.microsoft.com/oss/kubernetes/azure-cloud-controller-manager:v1.1.1
       imagePullPolicy: IfNotPresent
       command: ["cloud-controller-manager"]
       args:
-        - "--allocate-node-cidrs=true"
+        - "--allocate-node-cidrs=true" # "false" for Azure CNI and "true" for other network plugins
         - "--cloud-config=/etc/kubernetes/azure.json"
         - "--cloud-provider=azure"
         - "--cluster-cidr=10.244.0.0/16"

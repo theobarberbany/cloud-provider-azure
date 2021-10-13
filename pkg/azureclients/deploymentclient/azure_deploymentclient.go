@@ -96,7 +96,7 @@ func (c *Client) Get(ctx context.Context, resourceGroupName string, deploymentNa
 	}
 
 	result, rerr := c.getDeployment(ctx, resourceGroupName, deploymentName)
-	_ = mc.Observe(rerr.Error())
+	mc.Observe(rerr)
 	if rerr != nil {
 		if rerr.IsThrottled() {
 			// Update RetryAfterReader so that no more requests would be sent until RetryAfter expires.
@@ -157,7 +157,7 @@ func (c *Client) List(ctx context.Context, resourceGroupName string) ([]resource
 	}
 
 	result, rerr := c.listDeployment(ctx, resourceGroupName)
-	_ = mc.Observe(rerr.Error())
+	mc.Observe(rerr)
 	if rerr != nil {
 		if rerr.IsThrottled() {
 			// Update RetryAfterReader so that no more requests would be sent until RetryAfter expires.
@@ -318,7 +318,7 @@ func (c *Client) CreateOrUpdate(ctx context.Context, resourceGroupName string, d
 	}
 
 	rerr := c.createOrUpdateDeployment(ctx, resourceGroupName, deploymentName, parameters, etag)
-	_ = mc.Observe(rerr.Error())
+	mc.Observe(rerr)
 	if rerr != nil {
 		if rerr.IsThrottled() {
 			// Update RetryAfterReader so that no more requests would be sent until RetryAfter expires.
@@ -392,7 +392,7 @@ func (c *Client) Delete(ctx context.Context, resourceGroupName string, deploymen
 	}
 
 	rerr := c.deleteDeployment(ctx, resourceGroupName, deploymentName)
-	_ = mc.Observe(rerr.Error())
+	mc.Observe(rerr)
 	if rerr != nil {
 		if rerr.IsThrottled() {
 			// Update RetryAfterReader so that no more requests would be sent until RetryAfter expires.
@@ -438,7 +438,7 @@ func (c *Client) ExportTemplate(ctx context.Context, resourceGroupName string, d
 		autorest.Encode("path", c.subscriptionID),
 		autorest.Encode("path", resourceGroupName),
 		autorest.Encode("path", deploymentName))
-	response, rerr := c.armClient.PostResource(ctx, resourceID, "exportTemplate", struct{}{})
+	response, rerr := c.armClient.PostResource(ctx, resourceID, "exportTemplate", struct{}{}, map[string]interface{}{})
 	defer c.armClient.CloseResponse(ctx, response)
 	if rerr != nil {
 		klog.V(5).Infof("Received error in %s: resourceID: %s, error: %s", "deployment.exportTemplate.request", resourceID, rerr.Error())

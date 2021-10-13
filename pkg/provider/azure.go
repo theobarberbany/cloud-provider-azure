@@ -41,6 +41,7 @@ import (
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/flowcontrol"
 	cloudprovider "k8s.io/cloud-provider"
 	"k8s.io/klog/v2"
 
@@ -225,6 +226,8 @@ type Config struct {
 	// RouteUpdateWaitingInSeconds is the delay time for waiting route updates to take effect. This waiting delay is added
 	// because the routes are not taken effect when the async route updating operation returns success. Default is 30 seconds.
 	RouteUpdateWaitingInSeconds int `json:"routeUpdateWaitingInSeconds,omitempty" yaml:"routeUpdateWaitingInSeconds,omitempty"`
+	// The user agent for Azure customer usage attribution
+	UserAgent string `json:"userAgent,omitempty" yaml:"userAgent,omitempty"`
 }
 
 type InitSecretConfig struct {
@@ -276,7 +279,7 @@ type Cloud struct {
 	virtualNetworkLinksClient       virtualnetworklinksclient.Interface
 
 	ResourceRequestBackoff wait.Backoff
-	metadata               *InstanceMetadataService
+	Metadata               *InstanceMetadataService
 	VMSet                  VMSet
 
 	// ipv6DualStack allows overriding for unit testing.  It's normally initialized from featuregates
@@ -424,7 +427,7 @@ func NewCloudFromSecret(clientBuilder cloudprovider.ControllerClientBuilder, sec
 // NewCloudWithoutFeatureGates returns a Cloud without trying to wire the feature gates.  This is used by the unit tests
 // that don't load the actual features being used in the cluster.
 func NewCloudWithoutFeatureGates(configReader io.Reader, callFromCCM bool) (*Cloud, error) {
-	config, err := parseConfig(configReader)
+	config, err := ParseConfig(configReader)
 	if err != nil {
 		return nil, err
 	}
@@ -525,7 +528,7 @@ func (az *Cloud) InitializeCloudFromConfig(config *Config, fromSecret, callFromC
 	az.Config = *config
 	az.Environment = *env
 	az.ResourceRequestBackoff = resourceRequestBackoff
-	az.metadata, err = NewInstanceMetadataService(consts.ImdsServer)
+	az.Metadata, err = NewInstanceMetadataService(consts.ImdsServer)
 	if err != nil {
 		return err
 	}
@@ -784,6 +787,7 @@ func (az *Cloud) getAzureClientConfig(servicePrincipalToken *adal.ServicePrincip
 		Authorizer:              autorest.NewBearerAuthorizer(servicePrincipalToken),
 		Backoff:                 &retry.Backoff{Steps: 1},
 		DisableAzureStackCloud:  az.Config.DisableAzureStackCloud,
+		UserAgent:               az.Config.UserAgent,
 	}
 
 	if az.Config.CloudProviderBackoff {
@@ -805,8 +809,8 @@ func (az *Cloud) getAzureClientConfig(servicePrincipalToken *adal.ServicePrincip
 	return azClientConfig
 }
 
-// parseConfig returns a parsed configuration for an Azure cloudprovider config file
-func parseConfig(configReader io.Reader) (*Config, error) {
+// ParseConfig returns a parsed configuration for an Azure cloudprovider config file
+func ParseConfig(configReader io.Reader) (*Config, error) {
 	var config Config
 	if configReader == nil {
 		return nil, nil
@@ -889,6 +893,14 @@ func initDiskControllers(az *Cloud) error {
 	// Common controller contains the function
 	// needed by both blob disk and managed disk controllers
 
+	qps := float32(defaultAtachDetachDiskQPS)
+	bucket := defaultAtachDetachDiskBucket
+	if az.Config.AttachDetachDiskRateLimit != nil {
+		qps = az.Config.AttachDetachDiskRateLimit.CloudProviderRateLimitQPSWrite
+		bucket = az.Config.AttachDetachDiskRateLimit.CloudProviderRateLimitBucketWrite
+	}
+	klog.V(2).Infof("attach/detach disk operation rate limit QPS: %f, Bucket: %d", qps, bucket)
+
 	common := &controllerCommon{
 		location:              az.Location,
 		storageEndpointSuffix: az.Environment.StorageEndpointSuffix,
@@ -896,6 +908,7 @@ func initDiskControllers(az *Cloud) error {
 		subscriptionID:        az.SubscriptionID,
 		cloud:                 az,
 		lockMap:               newLockMap(),
+		diskOpRateLimiter:     flowcontrol.NewTokenBucketRateLimiter(qps, bucket),
 	}
 
 	if az.HasExtendedLocation() {

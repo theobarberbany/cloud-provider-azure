@@ -34,10 +34,9 @@ import (
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure"
 
-	"k8s.io/client-go/pkg/version"
 	"k8s.io/klog/v2"
-
 	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
+	"sigs.k8s.io/cloud-provider-azure/pkg/version"
 )
 
 var _ Interface = &Client{}
@@ -553,6 +552,28 @@ func (c *Client) PatchResource(ctx context.Context, resourceID string, parameter
 	return response, nil
 }
 
+// PatchResourceAsync patches a resource by resource ID asynchronously
+func (c *Client) PatchResourceAsync(ctx context.Context, resourceID string, parameters interface{}) (*azure.Future, *retry.Error) {
+	decorators := []autorest.PrepareDecorator{
+		autorest.WithPathParameters("{resourceID}", map[string]interface{}{"resourceID": resourceID}),
+		autorest.WithJSON(parameters),
+	}
+
+	request, err := c.PreparePatchRequest(ctx, decorators...)
+	if err != nil {
+		klog.V(5).Infof("Received error in %s: resourceID: %s, error: %s", "patch.prepare", resourceID, err)
+		return nil, retry.NewError(false, err)
+	}
+
+	future, resp, clientErr := c.SendAsync(ctx, request)
+	defer c.CloseResponse(ctx, resp)
+	if clientErr != nil {
+		klog.V(5).Infof("Received error in %s: resourceID: %s, error: %s", "patch.send", resourceID, clientErr.Error())
+		return nil, clientErr
+	}
+	return future, clientErr
+}
+
 // PutResourceAsync puts a resource by resource ID in async mode
 func (c *Client) PutResourceAsync(ctx context.Context, resourceID string, parameters interface{}) (*azure.Future, *retry.Error) {
 	decorators := []autorest.PrepareDecorator{
@@ -578,7 +599,7 @@ func (c *Client) PutResourceAsync(ctx context.Context, resourceID string, parame
 }
 
 // PostResource posts a resource by resource ID
-func (c *Client) PostResource(ctx context.Context, resourceID, action string, parameters interface{}) (*http.Response, *retry.Error) {
+func (c *Client) PostResource(ctx context.Context, resourceID, action string, parameters interface{}, queryParameters map[string]interface{}) (*http.Response, *retry.Error) {
 	pathParameters := map[string]interface{}{
 		"resourceID": resourceID,
 		"action":     action,
@@ -588,6 +609,10 @@ func (c *Client) PostResource(ctx context.Context, resourceID, action string, pa
 		autorest.WithPathParameters("{resourceID}/{action}", pathParameters),
 		autorest.WithJSON(parameters),
 	}
+	if len(queryParameters) > 0 {
+		decorators = append(decorators, autorest.WithQueryParameters(queryParameters))
+	}
+
 	request, err := c.PreparePostRequest(ctx, decorators...)
 	if err != nil {
 		klog.V(5).Infof("Received error in %s: resourceID: %s, error: %s", "post.prepare", resourceID, err)

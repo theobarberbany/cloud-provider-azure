@@ -79,11 +79,14 @@ func TestCreateVolume(t *testing.T) {
 	defer ctrl.Finish()
 	b := GetTestBlobDiskController(t)
 
+	ctx, cancel := getContextWithCancel()
+	defer cancel()
+
 	mockSAClient := mockstorageaccountclient.NewMockInterface(ctrl)
 	mockSAClient.EXPECT().ListKeys(gomock.Any(), b.common.resourceGroup, "testsa").Return(storage.AccountListKeysResult{}, &retryError500)
 	b.common.cloud.StorageAccountClient = mockSAClient
 
-	diskName, diskURI, requestGB, err := b.CreateVolume("testBlob", "testsa", "type", b.common.location, 10)
+	diskName, diskURI, requestGB, err := b.CreateVolume(ctx, "testBlob", "testsa", "type", b.common.location, 10)
 	var nilErr error
 	rawErr := fmt.Errorf("%w", nilErr)
 	retryErr := fmt.Errorf("Retriable: false, RetryAfter: 0s, HTTPStatusCode: 500, RawError: %w", rawErr)
@@ -102,7 +105,7 @@ func TestCreateVolume(t *testing.T) {
 			},
 		},
 	}, nil)
-	diskName, diskURI, requestGB, err = b.CreateVolume("testBlob", "testsa", "type", b.common.location, 10)
+	diskName, diskURI, requestGB, err = b.CreateVolume(ctx, "testBlob", "testsa", "type", b.common.location, 10)
 	expectedErrStr := "failed to put page blob testBlob.vhd in container vhds: storage: service returned error: StatusCode=403, ErrorCode=AccountIsDisabled, ErrorMessage=The specified account is disabled."
 	assert.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), expectedErrStr))
@@ -114,6 +117,8 @@ func TestCreateVolume(t *testing.T) {
 func TestDeleteVolume(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
+	ctx, cancel := getContextWithCancel()
+	defer cancel()
 	b := GetTestBlobDiskController(t)
 	b.common.cloud.BlobDiskController = &b
 
@@ -123,14 +128,14 @@ func TestDeleteVolume(t *testing.T) {
 
 	fakeDiskURL := "fake"
 	diskURL := "https://foo.blob./vhds/bar.vhd"
-	err := b.DeleteVolume(diskURL)
+	err := b.DeleteVolume(ctx, diskURL)
 	var nilErr error
 	rawErr := fmt.Errorf("%w", nilErr)
 	retryErr := fmt.Errorf("Retriable: false, RetryAfter: 0s, HTTPStatusCode: 500, RawError: %w", rawErr)
 	expectedErr := fmt.Errorf("no key for storage account foo, err %w", retryErr)
 	assert.EqualError(t, expectedErr, err.Error())
 
-	err = b.DeleteVolume(diskURL)
+	err = b.DeleteVolume(ctx, diskURL)
 	assert.EqualError(t, expectedErr, err.Error())
 
 	mockSAClient.EXPECT().ListKeys(gomock.Any(), b.common.resourceGroup, "foo").Return(storage.AccountListKeysResult{
@@ -142,11 +147,11 @@ func TestDeleteVolume(t *testing.T) {
 		},
 	}, nil)
 
-	err = b.DeleteVolume(fakeDiskURL)
+	err = b.DeleteVolume(ctx, fakeDiskURL)
 	expectedErr = fmt.Errorf("failed to parse vhd URI invalid vhd URI for regex https://(.*).blob./vhds/(.*): %w", fmt.Errorf("fake"))
 	assert.EqualError(t, expectedErr, err.Error())
 
-	err = b.DeleteVolume(diskURL)
+	err = b.DeleteVolume(ctx, diskURL)
 	expectedErrStr := "failed to delete vhd https://foo.blob./vhds/bar.vhd, account foo, blob bar.vhd, err: storage: service returned error: " +
 		"StatusCode=403, ErrorCode=AccountIsDisabled, ErrorMessage=The specified account is disabled."
 	assert.Error(t, err)

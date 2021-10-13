@@ -37,6 +37,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	cloudprovider "k8s.io/cloud-provider"
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/interfaceclient/mockinterfaceclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/loadbalancerclient/mockloadbalancerclient"
@@ -48,6 +49,15 @@ import (
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
 	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
 )
+
+// LBInUseRawError is the LoadBalancerInUseByVirtualMachineScaleSet raw error
+const LBInUseRawError = `{
+	"error": {
+    	"code": "LoadBalancerInUseByVirtualMachineScaleSet",
+    	"message": "Cannot delete load balancer /subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb since its child resources lb are in use by virtual machine scale set /subscriptions/sub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachineScaleSets/vmss.",
+    	"details": []
+  	}
+}`
 
 func TestFindProbe(t *testing.T) {
 	tests := []struct {
@@ -683,7 +693,7 @@ func TestShouldReleaseExistingOwnedPublicIP(t *testing.T) {
 	existingPipWithNoPublicIPAddressFormatProperties := network.PublicIPAddress{
 		ID:                              to.StringPtr("/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/publicIPAddresses/testPIP"),
 		Name:                            to.StringPtr("testPIP"),
-		Tags:                            map[string]*string{"service": to.StringPtr("default/test2")},
+		Tags:                            map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test2")},
 		PublicIPAddressPropertiesFormat: nil,
 	}
 
@@ -2697,6 +2707,36 @@ func TestReconcileSecurityGroup(t *testing.T) {
 				},
 			},
 		},
+		{
+			desc:    "reconcileSecurityGroup shall create shared sgs for service with azure-shared-securityrule annotations",
+			service: getTestService("test1", v1.ProtocolTCP, map[string]string{consts.ServiceAnnotationSharedSecurityRule: "true"}, true, 80),
+			existingSgs: map[string]network.SecurityGroup{"nsg": {
+				Name:                          to.StringPtr("nsg"),
+				SecurityGroupPropertiesFormat: &network.SecurityGroupPropertiesFormat{},
+			}},
+			lbIP:   to.StringPtr("1.2.3.4"),
+			wantLb: true,
+			expectedSg: &network.SecurityGroup{
+				Name: to.StringPtr("nsg"),
+				SecurityGroupPropertiesFormat: &network.SecurityGroupPropertiesFormat{
+					SecurityRules: &[]network.SecurityRule{
+						{
+							Name: to.StringPtr("shared-TCP-80-Internet"),
+							SecurityRulePropertiesFormat: &network.SecurityRulePropertiesFormat{
+								Protocol:                   network.SecurityRuleProtocol("Tcp"),
+								SourcePortRange:            to.StringPtr("*"),
+								DestinationPortRange:       to.StringPtr("80"),
+								SourceAddressPrefix:        to.StringPtr("Internet"),
+								DestinationAddressPrefixes: to.StringSlicePtr([]string{"1.2.3.4"}),
+								Access:                     network.SecurityRuleAccess("Allow"),
+								Priority:                   to.Int32Ptr(500),
+								Direction:                  network.SecurityRuleDirection("Inbound"),
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for i, test := range testCases {
@@ -2876,7 +2916,7 @@ func TestReconcilePublicIP(t *testing.T) {
 			existingPIPs: []network.PublicIPAddress{
 				{
 					Name: to.StringPtr("pip1"),
-					Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+					Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 						IPAddress: to.StringPtr("1.2.3.4"),
 					},
@@ -2894,11 +2934,11 @@ func TestReconcilePublicIP(t *testing.T) {
 			existingPIPs: []network.PublicIPAddress{
 				{
 					Name: to.StringPtr("pip1"),
-					Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+					Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 				},
 				{
 					Name: to.StringPtr("pip2"),
-					Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+					Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 				},
 			},
 			expectedError:               true,
@@ -2912,21 +2952,21 @@ func TestReconcilePublicIP(t *testing.T) {
 			existingPIPs: []network.PublicIPAddress{
 				{
 					Name: to.StringPtr("pip1"),
-					Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+					Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 						IPAddress: to.StringPtr("1.2.3.4"),
 					},
 				},
 				{
 					Name: to.StringPtr("pip2"),
-					Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+					Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 						IPAddress: to.StringPtr("1.2.3.4"),
 					},
 				},
 				{
 					Name: to.StringPtr("testPIP"),
-					Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+					Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 						IPAddress: to.StringPtr("1.2.3.4"),
 					},
@@ -2935,7 +2975,7 @@ func TestReconcilePublicIP(t *testing.T) {
 			expectedPIP: &network.PublicIPAddress{
 				ID:   to.StringPtr("/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/publicIPAddresses/testPIP"),
 				Name: to.StringPtr("testPIP"),
-				Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+				Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 					PublicIPAddressVersion: network.IPVersionIPv4,
 					IPAddress:              to.StringPtr("1.2.3.4"),
@@ -2951,21 +2991,21 @@ func TestReconcilePublicIP(t *testing.T) {
 			existingPIPs: []network.PublicIPAddress{
 				{
 					Name: to.StringPtr("pip1"),
-					Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+					Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 						IPAddress: to.StringPtr("1.2.3.4"),
 					},
 				},
 				{
 					Name: to.StringPtr("pip2"),
-					Tags: map[string]*string{"service": to.StringPtr("default/test1,default/test2")},
+					Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1,default/test2")},
 					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 						IPAddress: to.StringPtr("1.2.3.4"),
 					},
 				},
 				{
 					Name: to.StringPtr("testPIP"),
-					Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+					Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 						IPAddress: to.StringPtr("1.2.3.4"),
 					},
@@ -2974,7 +3014,7 @@ func TestReconcilePublicIP(t *testing.T) {
 			expectedPIP: &network.PublicIPAddress{
 				ID:   to.StringPtr("/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/publicIPAddresses/testPIP"),
 				Name: to.StringPtr("testPIP"),
-				Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+				Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 					PublicIPAddressVersion: network.IPVersionIPv4,
 					IPAddress:              to.StringPtr("1.2.3.4"),
@@ -2993,21 +3033,21 @@ func TestReconcilePublicIP(t *testing.T) {
 			existingPIPs: []network.PublicIPAddress{
 				{
 					Name: to.StringPtr("pip1"),
-					Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+					Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 						IPAddress: to.StringPtr("1.2.3.4"),
 					},
 				},
 				{
 					Name: to.StringPtr("pip2"),
-					Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+					Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 						IPAddress: to.StringPtr("1.2.3.4"),
 					},
 				},
 				{
 					Name: to.StringPtr("testPIP"),
-					Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+					Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 						IPAddress: to.StringPtr("1.2.3.4"),
 					},
@@ -3016,7 +3056,7 @@ func TestReconcilePublicIP(t *testing.T) {
 			expectedPIP: &network.PublicIPAddress{
 				ID:   to.StringPtr("/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/publicIPAddresses/testPIP"),
 				Name: to.StringPtr("testPIP"),
-				Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+				Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 					PublicIPAddressVersion:   network.IPVersionIPv4,
 					PublicIPAllocationMethod: network.IPAllocationMethodStatic,
@@ -3041,7 +3081,7 @@ func TestReconcilePublicIP(t *testing.T) {
 			existingPIPs: []network.PublicIPAddress{
 				{
 					Name: to.StringPtr("testPIP"),
-					Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+					Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 						PublicIPAddressVersion:   network.IPVersionIPv4,
 						PublicIPAllocationMethod: network.IPAllocationMethodStatic,
@@ -3058,7 +3098,7 @@ func TestReconcilePublicIP(t *testing.T) {
 			expectedPIP: &network.PublicIPAddress{
 				ID:   to.StringPtr("/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/publicIPAddresses/testPIP"),
 				Name: to.StringPtr("testPIP"),
-				Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+				Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 				PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 					PublicIPAddressVersion:   network.IPVersionIPv4,
 					PublicIPAllocationMethod: network.IPAllocationMethodStatic,
@@ -3087,7 +3127,7 @@ func TestReconcilePublicIP(t *testing.T) {
 				},
 				{
 					Name: to.StringPtr("pip2"),
-					Tags: map[string]*string{"service": to.StringPtr("default/test1")},
+					Tags: map[string]*string{consts.ServiceTagKey: to.StringPtr("default/test1")},
 					PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 						IPAddress: to.StringPtr("1.2.3.4"),
 					},
@@ -3519,8 +3559,8 @@ func TestEnsurePublicIPExistsWithExtendedLocation(t *testing.T) {
 			ProvisioningState:        "",
 		},
 		Tags: map[string]*string{
-			"service":                 to.StringPtr("default/test1"),
-			"kubernetes-cluster-name": to.StringPtr(""),
+			consts.ServiceTagKey:  to.StringPtr("default/test1"),
+			consts.ClusterNameKey: to.StringPtr(""),
 		},
 	}
 	mockPIPsClient := az.PublicIPAddressesClient.(*mockpublicipclient.MockInterface)
@@ -4070,6 +4110,65 @@ func TestCleanupVMSetFromBackendPoolByCondition(t *testing.T) {
 	assert.Equal(t, expectedLB, *cleanedLB)
 }
 
+func TestCleanupVMSetFromBackendPoolForInstanceNotFound(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	cloud := GetTestCloud(ctrl)
+	cloud.LoadBalancerSku = consts.LoadBalancerSkuStandard
+	cloud.EnableMultipleStandardLoadBalancers = true
+	cloud.PrimaryAvailabilitySetName = "agentpool1-availabilitySet-00000000"
+	clusterName := "testCluster"
+	service := getTestService("test", v1.ProtocolTCP, nil, false, 80)
+	lb := buildDefaultTestLB("testCluster", []string{
+		"/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/networkInterfaces/k8s-agentpool1-00000000-nic-1/ipConfigurations/ipconfig1",
+		"/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/networkInterfaces/k8s-agentpool2-00000000-nic-1/ipConfigurations/ipconfig1",
+	})
+	// existingVMForAS1 := buildDefaultTestVirtualMachine("/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Compute/availabilitySets/agentpool1-availabilitySet-00000000", []string{"/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/networkInterfaces/k8s-agentpool1-00000000-nic-1"})
+	existingVMForAS2 := buildDefaultTestVirtualMachine("/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Compute/availabilitySets/agentpool2-availabilitySet-00000000", []string{"/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/networkInterfaces/k8s-agentpool2-00000000-nic-1"})
+	existingNICForAS1 := buildDefaultTestInterface(true, []string{"/subscriptions/sub/resourceGroups/gh/providers/Microsoft.Network/loadBalancers/testCluster/backendAddressPools/testCluster"})
+	existingNICForAS1.VirtualMachine = &network.SubResource{
+		ID: to.StringPtr("/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/k8s-agentpool1-00000000-1"),
+	}
+	existingNICForAS2 := buildDefaultTestInterface(true, []string{"/subscriptions/sub/resourceGroups/gh/providers/Microsoft.Network/loadBalancers/testCluster/backendAddressPools/testCluster"})
+	existingNICForAS2.VirtualMachine = &network.SubResource{
+		ID: to.StringPtr("/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/k8s-agentpool2-00000000-1"),
+	}
+	mockVMClient := mockvmclient.NewMockInterface(ctrl)
+	mockVMClient.EXPECT().Get(gomock.Any(), cloud.ResourceGroup, "k8s-agentpool1-00000000-1", gomock.Any()).Return(compute.VirtualMachine{}, &retry.Error{RawError: cloudprovider.InstanceNotFound})
+	mockVMClient.EXPECT().Get(gomock.Any(), cloud.ResourceGroup, "k8s-agentpool2-00000000-1", gomock.Any()).Return(existingVMForAS2, nil)
+	cloud.VirtualMachinesClient = mockVMClient
+	mockNICClient := mockinterfaceclient.NewMockInterface(ctrl)
+	mockNICClient.EXPECT().Get(gomock.Any(), "rg", "k8s-agentpool1-00000000-nic-1", gomock.Any()).Return(existingNICForAS1, nil)
+	mockNICClient.EXPECT().Get(gomock.Any(), "rg", "k8s-agentpool2-00000000-nic-1", gomock.Any()).Return(existingNICForAS2, nil).Times(3)
+	mockNICClient.EXPECT().CreateOrUpdate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+	cloud.InterfacesClient = mockNICClient
+
+	expectedLB := network.LoadBalancer{
+		Name: to.StringPtr("testCluster"),
+		LoadBalancerPropertiesFormat: &network.LoadBalancerPropertiesFormat{
+			BackendAddressPools: &[]network.BackendAddressPool{
+				{
+					Name: to.StringPtr("testCluster"),
+					BackendAddressPoolPropertiesFormat: &network.BackendAddressPoolPropertiesFormat{
+						BackendIPConfigurations: &[]network.InterfaceIPConfiguration{
+							{
+								ID: to.StringPtr("/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/networkInterfaces/k8s-agentpool1-00000000-nic-1/ipConfigurations/ipconfig1"),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	shouldRemoveVMSetFromSLB := func(vmSetName string) bool {
+		return !strings.EqualFold(vmSetName, cloud.VMSet.GetPrimaryVMSetName()) && vmSetName != ""
+	}
+	cleanedLB, err := cloud.cleanupVMSetFromBackendPoolByCondition(&lb, &service, clusterName, shouldRemoveVMSetFromSLB)
+	assert.NoError(t, err)
+	assert.Equal(t, expectedLB, *cleanedLB)
+}
+
 func buildDefaultTestLB(name string, backendIPConfigs []string) network.LoadBalancer {
 	expectedLB := network.LoadBalancer{
 		Name: to.StringPtr(name),
@@ -4102,7 +4201,7 @@ func TestEnsurePIPTagged(t *testing.T) {
 	service := v1.Service{
 		ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{
-				consts.ServiceAnnotationAzurePIPTags: "a=b,c=d,e=,=f,ghi",
+				consts.ServiceAnnotationAzurePIPTags: "A=b,c=d,e=,=f,ghi",
 			},
 		},
 	}
@@ -4133,7 +4232,7 @@ func TestEnsurePIPTagged(t *testing.T) {
 		assert.Equal(t, expectedPIP, pip)
 	})
 
-	t.Run("ensurePIPTagged should delete the old tags if tht SystemTags is set", func(t *testing.T) {
+	t.Run("ensurePIPTagged should delete the old tags if the SystemTags is set", func(t *testing.T) {
 		cloud.SystemTags = "a,foo"
 		expectedPIP := network.PublicIPAddress{
 			Tags: map[string]*string{
@@ -4273,7 +4372,7 @@ func TestCleanOrphanedLoadBalancerLBInUseByVMSS(t *testing.T) {
 		cloud.LoadBalancerSku = consts.LoadBalancerSkuStandard
 
 		mockLBClient := cloud.LoadBalancerClient.(*mockloadbalancerclient.MockInterface)
-		mockLBClient.EXPECT().Delete(gomock.Any(), "rg", "test").Return(&retry.Error{RawError: errors.New(retry.LBInUseRawError)})
+		mockLBClient.EXPECT().Delete(gomock.Any(), "rg", "test").Return(&retry.Error{RawError: errors.New(LBInUseRawError)})
 		mockLBClient.EXPECT().Delete(gomock.Any(), "rg", "test").Return(nil)
 
 		expectedVMSS := buildTestVMSSWithLB(testVMSSName, "vmss-vm-", []string{testLBBackendpoolID0}, false)
@@ -4541,5 +4640,92 @@ func TestReconcileSharedLoadBalancer(t *testing.T) {
 			assert.Equal(t, tc.expectedErr, err)
 			assert.Equal(t, tc.expectedLBs, lbs)
 		})
+	}
+}
+
+func TestGetServiceFromPIPDNSTags(t *testing.T) {
+	tests := []struct {
+		desc     string
+		tags     map[string]*string
+		expected string
+	}{
+		{
+			desc: "Empty string should be returned when tags are empty",
+		},
+		{
+			desc: "Empty string should be returned when tags don't contain dns label tag",
+		},
+		{
+			desc:     "Expected service should be returned when tags contain dns label tag",
+			tags:     map[string]*string{consts.ServiceUsingDNSKey: to.StringPtr("test-service")},
+			expected: "test-service",
+		},
+		{
+			desc:     "Expected service should be returned when tags contain legacy dns label tag",
+			tags:     map[string]*string{consts.LegacyServiceUsingDNSKey: to.StringPtr("test-service")},
+			expected: "test-service",
+		},
+	}
+	for i, c := range tests {
+		actual := getServiceFromPIPDNSTags(c.tags)
+		assert.Equal(t, actual, c.expected, "TestCase[%d]: %s", i, c.desc)
+	}
+}
+
+func TestGetServiceFromPIPServiceTags(t *testing.T) {
+	tests := []struct {
+		desc     string
+		tags     map[string]*string
+		expected string
+	}{
+		{
+			desc: "Empty string should be returned when tags are empty",
+		},
+		{
+			desc: "Empty string should be returned when tags don't contain service tag",
+		},
+		{
+			desc:     "Expected service should be returned when tags contain service tag",
+			tags:     map[string]*string{consts.ServiceTagKey: to.StringPtr("test-service")},
+			expected: "test-service",
+		},
+		{
+			desc:     "Expected service should be returned when tags contain legacy service tag",
+			tags:     map[string]*string{consts.LegacyServiceTagKey: to.StringPtr("test-service")},
+			expected: "test-service",
+		},
+	}
+	for i, c := range tests {
+		actual := getServiceFromPIPServiceTags(c.tags)
+		assert.Equal(t, actual, c.expected, "TestCase[%d]: %s", i, c.desc)
+	}
+}
+
+func TestGetClusterFromPIPClusterTags(t *testing.T) {
+	tests := []struct {
+		desc     string
+		tags     map[string]*string
+		expected string
+	}{
+		{
+			desc: "Empty string should be returned when tags are empty",
+		},
+		{
+			desc: "Empty string should be returned when tags don't contain cluster name tag",
+		},
+		{
+			desc:     "Expected service should be returned when tags contain cluster name tag",
+			tags:     map[string]*string{consts.ClusterNameKey: to.StringPtr("test-cluster")},
+			expected: "test-cluster",
+		},
+		{
+			desc:     "Expected service should be returned when tags contain legacy cluster name tag",
+			tags:     map[string]*string{consts.LegacyClusterNameKey: to.StringPtr("test-cluster")},
+			expected: "test-cluster",
+		},
+	}
+	for i, c := range tests {
+		actual := getClusterFromPIPClusterTags(c.tags)
+		assert.Equal(t, actual, c.expected, "TestCase[%d]: %s", i, c.desc)
 	}
 }
