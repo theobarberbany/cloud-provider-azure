@@ -145,7 +145,11 @@ type Config struct {
 	// Tags determines what tags shall be applied to the shared resources managed by controller manager, which
 	// includes load balancer, security group and route table. The supported format is `a=b,c=d,...`. After updated
 	// this config, the old tags would be replaced by the new ones.
+	// Because special characters are not supported in "tags" configuration, "tags" support would be removed in a future release,
+	// please consider migrating the config to "tagsMap".
 	Tags string `json:"tags,omitempty" yaml:"tags,omitempty"`
+	// TagsMap is similar to Tags but holds tags with special characters such as `=` and `,`.
+	TagsMap map[string]string `json:"tagsMap,omitempty" yaml:"tagsMap,omitempty"`
 	// SystemTags determines the tag keys managed by cloud provider. If it is not set, no tags would be deleted if
 	// the `Tags` is changed. However, the old tags would be deleted if they are neither included in `Tags` nor
 	// in `SystemTags` after the update of `Tags`.
@@ -297,6 +301,8 @@ type Cloud struct {
 	nodeResourceGroups map[string]string
 	// unmanagedNodes holds a list of nodes not managed by Azure cloud provider.
 	unmanagedNodes sets.String
+	// excludeLoadBalancerNodes holds a list of nodes that should be excluded from LoadBalancer.
+	excludeLoadBalancerNodes sets.String
 	// nodeInformerSynced is for determining if the informer has synced.
 	nodeInformerSynced cache.InformerSynced
 
@@ -319,7 +325,6 @@ type Cloud struct {
 	nsgCache *azcache.TimedCache
 	rtCache  *azcache.TimedCache
 
-	*BlobDiskController
 	*ManagedDiskController
 	*controllerCommon
 }
@@ -403,11 +408,12 @@ func (az *Cloud) configSecretMetadata(secretName, secretNamespace, cloudConfigKe
 
 func NewCloudFromSecret(clientBuilder cloudprovider.ControllerClientBuilder, secretName, secretNamespace, cloudConfigKey string) (cloudprovider.Interface, error) {
 	az := &Cloud{
-		nodeNames:          sets.NewString(),
-		nodeZones:          map[string]sets.String{},
-		nodeResourceGroups: map[string]string{},
-		unmanagedNodes:     sets.NewString(),
-		routeCIDRs:         map[string]string{},
+		nodeNames:                sets.NewString(),
+		nodeZones:                map[string]sets.String{},
+		nodeResourceGroups:       map[string]string{},
+		unmanagedNodes:           sets.NewString(),
+		routeCIDRs:               map[string]string{},
+		excludeLoadBalancerNodes: sets.NewString(),
 	}
 
 	az.configSecretMetadata(secretName, secretNamespace, cloudConfigKey)
@@ -433,11 +439,12 @@ func NewCloudWithoutFeatureGates(configReader io.Reader, callFromCCM bool) (*Clo
 	}
 
 	az := &Cloud{
-		nodeNames:          sets.NewString(),
-		nodeZones:          map[string]sets.String{},
-		nodeResourceGroups: map[string]string{},
-		unmanagedNodes:     sets.NewString(),
-		routeCIDRs:         map[string]string{},
+		nodeNames:                sets.NewString(),
+		nodeZones:                map[string]sets.String{},
+		nodeResourceGroups:       map[string]string{},
+		unmanagedNodes:           sets.NewString(),
+		routeCIDRs:               map[string]string{},
+		excludeLoadBalancerNodes: sets.NewString(),
 	}
 
 	err = az.InitializeCloudFromConfig(config, false, callFromCCM)
@@ -918,7 +925,6 @@ func initDiskControllers(az *Cloud) error {
 		}
 	}
 
-	az.BlobDiskController = &BlobDiskController{common: common}
 	az.ManagedDiskController = &ManagedDiskController{common: common}
 	az.controllerCommon = common
 
@@ -937,10 +943,6 @@ func (az *Cloud) SetInformers(informerFactory informers.SharedInformerFactory) {
 		UpdateFunc: func(prev, obj interface{}) {
 			prevNode := prev.(*v1.Node)
 			newNode := obj.(*v1.Node)
-			if newNode.Labels[consts.LabelFailureDomainBetaZone] ==
-				prevNode.Labels[consts.LabelFailureDomainBetaZone] {
-				return
-			}
 			az.updateNodeCaches(prevNode, newNode)
 		},
 		DeleteFunc: func(obj interface{}) {
@@ -993,6 +995,12 @@ func (az *Cloud) updateNodeCaches(prevNode, newNode *v1.Node) {
 		managed, ok := prevNode.ObjectMeta.Labels[consts.ManagedByAzureLabel]
 		if ok && strings.EqualFold(managed, consts.NotManagedByAzureLabelValue) {
 			az.unmanagedNodes.Delete(prevNode.ObjectMeta.Name)
+			az.excludeLoadBalancerNodes.Delete(prevNode.ObjectMeta.Name)
+		}
+
+		// Remove from excludeLoadBalancerNodes cache.
+		if _, hasExcludeBalancerLabel := prevNode.ObjectMeta.Labels[v1.LabelNodeExcludeBalancers]; hasExcludeBalancerLabel {
+			az.excludeLoadBalancerNodes.Delete(prevNode.ObjectMeta.Name)
 		}
 	}
 
@@ -1019,6 +1027,12 @@ func (az *Cloud) updateNodeCaches(prevNode, newNode *v1.Node) {
 		managed, ok := newNode.ObjectMeta.Labels[consts.ManagedByAzureLabel]
 		if ok && strings.EqualFold(managed, consts.NotManagedByAzureLabelValue) {
 			az.unmanagedNodes.Insert(newNode.ObjectMeta.Name)
+			az.excludeLoadBalancerNodes.Insert(newNode.ObjectMeta.Name)
+		}
+
+		// Add to excludeLoadBalancerNodes cache.
+		if _, hasExcludeBalancerLabel := newNode.ObjectMeta.Labels[v1.LabelNodeExcludeBalancers]; hasExcludeBalancerLabel {
+			az.excludeLoadBalancerNodes.Insert(newNode.ObjectMeta.Name)
 		}
 	}
 }
@@ -1124,16 +1138,23 @@ func (az *Cloud) GetUnmanagedNodes() (sets.String, error) {
 	return sets.NewString(az.unmanagedNodes.List()...), nil
 }
 
-// ShouldNodeExcludedFromLoadBalancer returns true if node is unmanaged or in external resource group.
-func (az *Cloud) ShouldNodeExcludedFromLoadBalancer(node *v1.Node) bool {
-	labels := node.ObjectMeta.Labels
-	if rg, ok := labels[consts.ExternalResourceGroupLabel]; ok && !strings.EqualFold(rg, az.ResourceGroup) {
-		return true
+// ShouldNodeExcludedFromLoadBalancer returns true if node is unmanaged, in external resource group or labeled with "node.kubernetes.io/exclude-from-external-load-balancers".
+func (az *Cloud) ShouldNodeExcludedFromLoadBalancer(nodeName string) (bool, error) {
+	// Kubelet won't set az.nodeInformerSynced, always return nil.
+	if az.nodeInformerSynced == nil {
+		return false, nil
 	}
 
-	if managed, ok := labels[consts.ManagedByAzureLabel]; ok && strings.EqualFold(managed, consts.NotManagedByAzureLabelValue) {
-		return true
+	az.nodeCachesLock.RLock()
+	defer az.nodeCachesLock.RUnlock()
+	if !az.nodeInformerSynced() {
+		return false, fmt.Errorf("node informer is not synced when trying to fetch node caches")
 	}
 
-	return false
+	// Return true if the node is in external resource group.
+	if cachedRG, ok := az.nodeResourceGroups[nodeName]; ok && !strings.EqualFold(cachedRG, az.ResourceGroup) {
+		return true, nil
+	}
+
+	return az.excludeLoadBalancerNodes.Has(nodeName), nil
 }

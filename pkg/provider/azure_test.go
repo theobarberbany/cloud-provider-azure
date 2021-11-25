@@ -277,7 +277,7 @@ func setMockLBs(az *Cloud, ctrl *gomock.Controller, expectedLBs *[]network.LoadB
 	for _, lb := range *expectedLBs {
 		mockLBsClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, *lb.Name, gomock.Any()).Return((*expectedLBs)[lbIndex], nil).MaxTimes(2)
 	}
-	mockLBsClient.EXPECT().List(gomock.Any(), az.ResourceGroup).Return(*expectedLBs, nil).MaxTimes(3)
+	mockLBsClient.EXPECT().List(gomock.Any(), az.ResourceGroup).Return(*expectedLBs, nil).MaxTimes(4)
 	mockLBsClient.EXPECT().List(gomock.Any(), gomock.Not(az.ResourceGroup)).Return([]network.LoadBalancer{}, &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound}).AnyTimes()
 	mockLBsClient.EXPECT().Get(gomock.Any(), gomock.Not(az.ResourceGroup), gomock.Any(), gomock.Any()).Return(network.LoadBalancer{}, &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound}).AnyTimes()
 	mockLBsClient.EXPECT().Delete(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).MaxTimes(1)
@@ -598,7 +598,7 @@ func testLoadBalancerServiceAutoModeDeleteSelection(t *testing.T, isInternal boo
 			mockLBsClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, *lb.Name, gomock.Any()).Return(expectedLBs[0], nil).MaxTimes(2)
 		}
 		mockLBsClient.EXPECT().Delete(gomock.Any(), az.ResourceGroup, gomock.Any()).Return(nil).AnyTimes()
-		mockLBsClient.EXPECT().List(gomock.Any(), az.ResourceGroup).Return(expectedLBs, nil).MaxTimes(3)
+		mockLBsClient.EXPECT().List(gomock.Any(), az.ResourceGroup).Return(expectedLBs, nil).MaxTimes(4)
 
 		// expected is MIN(index, availabilitySetCount)
 		expectedNumOfLB := int(math.Min(float64(index), float64(availabilitySetCount)))
@@ -2132,12 +2132,13 @@ func getCloudFromConfig(t *testing.T, config string) *Cloud {
 	assert.NoError(t, err)
 
 	az := &Cloud{
-		nodeNames:          sets.NewString(),
-		nodeZones:          map[string]sets.String{},
-		nodeResourceGroups: map[string]string{},
-		unmanagedNodes:     sets.NewString(),
-		routeCIDRs:         map[string]string{},
-		ZoneClient:         mockzoneclient.NewMockInterface(ctrl),
+		nodeNames:                sets.NewString(),
+		nodeZones:                map[string]sets.String{},
+		nodeResourceGroups:       map[string]string{},
+		unmanagedNodes:           sets.NewString(),
+		excludeLoadBalancerNodes: sets.NewString(),
+		routeCIDRs:               map[string]string{},
+		ZoneClient:               mockzoneclient.NewMockInterface(ctrl),
 	}
 	mockZoneClient := az.ZoneClient.(*mockzoneclient.MockInterface)
 	mockZoneClient.EXPECT().GetZones(gomock.Any(), gomock.Any()).Return(map[string][]string{"eastus": {"1", "2", "3"}}, nil)
@@ -3067,17 +3068,6 @@ func TestCanCombineSharedAndPrivateRulesInSameGroup(t *testing.T) {
 	}
 }
 
-// TODO: sanity check if the same IP address incorrectly gets put in twice?
-// (shouldn't happen but...)
-
-// func TestIfServiceIsEditedFromOwnRuleToSharedRuleThenOwnRuleIsDeletedAndSharedRuleIsCreated(t *testing.T) {
-// 	t.Error()
-// }
-
-// func TestIfServiceIsEditedFromSharedRuleToOwnRuleThenItIsRemovedFromSharedRuleAndOwnRuleIsCreated(t *testing.T) {
-// 	t.Error()
-// }
-
 func TestGetResourceGroupFromDiskURI(t *testing.T) {
 	tests := []struct {
 		diskURL        string
@@ -3242,6 +3232,7 @@ func TestUpdateNodeCaches(t *testing.T) {
 	az.nodeZones = map[string]sets.String{zone: nodesInZone}
 	az.nodeResourceGroups = map[string]string{"prevNode": "rg"}
 	az.unmanagedNodes = sets.NewString("prevNode")
+	az.excludeLoadBalancerNodes = sets.NewString("prevNode")
 	az.nodeNames = sets.NewString("prevNode")
 
 	prevNode := v1.Node{
@@ -3259,6 +3250,7 @@ func TestUpdateNodeCaches(t *testing.T) {
 	assert.Equal(t, 0, len(az.nodeZones[zone]))
 	assert.Equal(t, 0, len(az.nodeResourceGroups))
 	assert.Equal(t, 0, len(az.unmanagedNodes))
+	assert.Equal(t, 0, len(az.excludeLoadBalancerNodes))
 	assert.Equal(t, 0, len(az.nodeNames))
 
 	newNode := v1.Node{
@@ -3267,6 +3259,7 @@ func TestUpdateNodeCaches(t *testing.T) {
 				consts.LabelFailureDomainBetaZone: zone,
 				consts.ExternalResourceGroupLabel: consts.TrueAnnotationValue,
 				consts.ManagedByAzureLabel:        "false",
+				v1.LabelNodeExcludeBalancers:      "true",
 			},
 			Name: "newNode",
 		},
@@ -3276,6 +3269,7 @@ func TestUpdateNodeCaches(t *testing.T) {
 	assert.Equal(t, 1, len(az.nodeZones[zone]))
 	assert.Equal(t, 1, len(az.nodeResourceGroups))
 	assert.Equal(t, 1, len(az.unmanagedNodes))
+	assert.Equal(t, 1, len(az.excludeLoadBalancerNodes))
 	assert.Equal(t, 1, len(az.nodeNames))
 }
 

@@ -41,17 +41,11 @@ import (
 )
 
 const (
-	// for limits check https://docs.microsoft.com/en-us/azure/azure-subscription-service-limits#storage-limits
-	maxStorageAccounts                     = 100 // max # is 200 (250 with special request). this allows 100 for everything else including stand alone disks
-	maxDisksPerStorageAccounts             = 60
-	storageAccountUtilizationBeforeGrowing = 0.5
 	// Disk Caching is not supported for disks 4 TiB and larger
 	// https://docs.microsoft.com/en-us/azure/virtual-machines/premium-storage-performance#disk-caching
 	diskCachingLimit = 4096 // GiB
 
 	maxLUN                 = 64 // max number of LUNs per VM
-	errLeaseIDMissing      = "LeaseIdMissing"
-	errContainerNotFound   = "ContainerNotFound"
 	errStatusCode400       = "statuscode=400"
 	errInvalidParameter    = `code="invalidparameter"`
 	errTargetInstanceIds   = `target="instanceids"`
@@ -105,7 +99,6 @@ type AttachDiskOptions struct {
 	cachingMode             compute.CachingTypes
 	diskName                string
 	diskEncryptionSetID     string
-	isManagedDisk           bool
 	writeAcceleratorEnabled bool
 	lun                     int32
 }
@@ -145,9 +138,10 @@ func (c *controllerCommon) getNodeVMSet(nodeName types.NodeName, crt azcache.Azu
 	return ss, nil
 }
 
-// AttachDisk attaches a vhd to vm. The vhd must exist, can be identified by diskName, diskURI.
+// AttachDisk attaches a disk to vm
+// parameter async indicates whether allow multiple batch disk attach on one node in parallel
 // return (lun, error)
-func (c *controllerCommon) AttachDisk(ctx context.Context, isManagedDisk bool, diskName, diskURI string, nodeName types.NodeName,
+func (c *controllerCommon) AttachDisk(ctx context.Context, async bool, diskName, diskURI string, nodeName types.NodeName,
 	cachingMode compute.CachingTypes, disk *compute.Disk) (int32, error) {
 	diskEncryptionSetID := ""
 	writeAcceleratorEnabled := false
@@ -209,7 +203,6 @@ func (c *controllerCommon) AttachDisk(ctx context.Context, isManagedDisk bool, d
 
 	options := AttachDiskOptions{
 		lun:                     -1,
-		isManagedDisk:           isManagedDisk,
 		diskName:                diskName,
 		cachingMode:             cachingMode,
 		diskEncryptionSetID:     diskEncryptionSetID,
@@ -255,12 +248,12 @@ func (c *controllerCommon) AttachDisk(ctx context.Context, isManagedDisk bool, d
 		return -1, err
 	}
 
-	if c.diskOpRateLimiter.TryAccept() {
+	if async && c.diskOpRateLimiter.TryAccept() {
 		// unlock and wait for attach disk complete
 		unlock = true
 		c.lockMap.UnlockEntry(node)
 	} else {
-		klog.Warningf("azureDisk - switch to batch operation since disk operation is rate limited, current QPS: %f", c.diskOpRateLimiter.QPS())
+		klog.Warningf("azureDisk - switch to batch operation due to rate limited(async: %t), QPS: %f", async, c.diskOpRateLimiter.QPS())
 	}
 	resourceGroup, err := getResourceGroupFromDiskURI(diskURI)
 	if err != nil {
