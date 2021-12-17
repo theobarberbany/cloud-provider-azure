@@ -40,6 +40,7 @@ import (
 	"k8s.io/component-base/configz"
 	"k8s.io/component-base/term"
 	genericcontrollermanager "k8s.io/controller-manager/app"
+	controllerhealthz "k8s.io/controller-manager/pkg/healthz"
 	"k8s.io/klog/v2"
 
 	cloudcontrollerconfig "sigs.k8s.io/cloud-provider-azure/cmd/cloud-controller-manager/app/config"
@@ -270,9 +271,10 @@ func StartHTTPServer(c *cloudcontrollerconfig.CompletedConfig, stopCh <-chan str
 		checks = append(checks, electionChecker)
 	}
 
+	healthzHandler := controllerhealthz.NewMutableHealthzHandler(checks...)
 	// Start the controller manager HTTP server
 	if c.SecureServing != nil {
-		unsecuredMux := genericcontrollermanager.NewBaseHandler(&c.ComponentConfig.Generic.Debugging, checks...)
+		unsecuredMux := genericcontrollermanager.NewBaseHandler(&c.ComponentConfig.Generic.Debugging, healthzHandler)
 		handler := genericcontrollermanager.BuildHandlerChain(unsecuredMux, &c.Authorization, &c.Authentication)
 		// TODO: handle stoppedCh returned by c.SecureServing.Serve
 		if _, err := c.SecureServing.Serve(handler, 0, stopCh); err != nil {
@@ -282,7 +284,7 @@ func StartHTTPServer(c *cloudcontrollerconfig.CompletedConfig, stopCh <-chan str
 		healthz.InstallReadyzHandler(unsecuredMux, checks...)
 	}
 	if c.InsecureServing != nil {
-		unsecuredMux := genericcontrollermanager.NewBaseHandler(&c.ComponentConfig.Generic.Debugging, checks...)
+		unsecuredMux := genericcontrollermanager.NewBaseHandler(&c.ComponentConfig.Generic.Debugging, healthzHandler)
 		insecureSuperuserAuthn := server.AuthenticationInfo{Authenticator: &server.InsecureSuperuser{}}
 		handler := genericcontrollermanager.BuildHandlerChain(unsecuredMux, nil, &insecureSuperuserAuthn)
 		if err := c.InsecureServing.Serve(handler, 0, stopCh); err != nil {
@@ -336,7 +338,7 @@ func Run(ctx context.Context, c *cloudcontrollerconfig.CompletedConfig) error {
 		klog.Errorf("unable to register configz: %v", err)
 	}
 
-	if err := startControllers(c, ctx.Done(), cloud, newControllerInitializers()); err != nil {
+	if err := startControllers(ctx, c, ctx.Done(), cloud, newControllerInitializers()); err != nil {
 		klog.Fatalf("error running controllers: %v", err)
 	}
 
@@ -344,22 +346,22 @@ func Run(ctx context.Context, c *cloudcontrollerconfig.CompletedConfig) error {
 }
 
 // startControllers starts the cloud specific controller loops.
-func startControllers(c *cloudcontrollerconfig.CompletedConfig, stopCh <-chan struct{}, cloud cloudprovider.Interface, controllers map[string]initFunc) error {
+func startControllers(ctx context.Context, completedConfig *cloudcontrollerconfig.CompletedConfig, stopCh <-chan struct{}, cloud cloudprovider.Interface, controllers map[string]initFunc) error {
 	// Initialize the cloud provider with a reference to the clientBuilder
-	cloud.Initialize(c.ClientBuilder, stopCh)
+	cloud.Initialize(completedConfig.ClientBuilder, stopCh)
 	// Set the informer on the user cloud object
 	if informerUserCloud, ok := cloud.(cloudprovider.InformerUser); ok {
-		informerUserCloud.SetInformers(c.SharedInformers)
+		informerUserCloud.SetInformers(completedConfig.SharedInformers)
 	}
 
 	for controllerName, initFn := range controllers {
-		if !genericcontrollermanager.IsControllerEnabled(controllerName, ControllersDisabledByDefault, c.ComponentConfig.Generic.Controllers) {
+		if !genericcontrollermanager.IsControllerEnabled(controllerName, ControllersDisabledByDefault, completedConfig.ComponentConfig.Generic.Controllers) {
 			klog.Warningf("%q is disabled", controllerName)
 			continue
 		}
 
 		klog.V(1).Infof("Starting %q", controllerName)
-		_, started, err := initFn(c, cloud, stopCh)
+		_, started, err := initFn(ctx, completedConfig, cloud, stopCh)
 		if err != nil {
 			klog.Errorf("Error starting %q: %s", controllerName, err.Error())
 			return err
@@ -370,17 +372,17 @@ func startControllers(c *cloudcontrollerconfig.CompletedConfig, stopCh <-chan st
 		}
 		klog.Infof("Started %q", controllerName)
 
-		time.Sleep(wait.Jitter(c.ComponentConfig.Generic.ControllerStartInterval.Duration, ControllerStartJitter))
+		time.Sleep(wait.Jitter(completedConfig.ComponentConfig.Generic.ControllerStartInterval.Duration, ControllerStartJitter))
 	}
 
 	// If apiserver is not running we should wait for some time and fail only then. This is particularly
 	// important when we start apiserver and controller manager at the same time.
-	if err := genericcontrollermanager.WaitForAPIServer(c.VersionedClient, 10*time.Second); err != nil {
+	if err := genericcontrollermanager.WaitForAPIServer(completedConfig.VersionedClient, 10*time.Second); err != nil {
 		klog.Fatalf("Failed to wait for apiserver being healthy: %v", err)
 	}
 
 	klog.V(2).Infof("startControllers: starting shared informers")
-	c.SharedInformers.Start(stopCh)
+	completedConfig.SharedInformers.Start(stopCh)
 
 	<-stopCh
 	klog.V(1).Infof("startControllers: received stopping signal, exiting")
@@ -391,7 +393,7 @@ func startControllers(c *cloudcontrollerconfig.CompletedConfig, stopCh <-chan st
 // initFunc is used to launch a particular controller.  It may run additional "should I activate checks".
 // Any error returned will cause the controller process to `Fatal`
 // The bool indicates whether the controller was enabled.
-type initFunc func(ctx *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface, stop <-chan struct{}) (debuggingHandler http.Handler, enabled bool, err error)
+type initFunc func(ctx context.Context, completedConfig *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface, stop <-chan struct{}) (debuggingHandler http.Handler, enabled bool, err error)
 
 // KnownControllers indicate the default controller we are known.
 func KnownControllers() []string {
