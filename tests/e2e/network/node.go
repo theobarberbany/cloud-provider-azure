@@ -23,8 +23,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2020-08-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2021-07-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
@@ -104,12 +104,12 @@ var _ = Describe("Azure node resources", func() {
 		vmsses, err := utils.ListVMSSes(tc)
 		Expect(utils.HandleVMSSNotFoundErr(err)).To(BeTrue())
 
-		if vmsses != nil && len(*vmsses) != 0 {
-			for _, vmss := range *vmsses {
+		if len(vmsses) != 0 {
+			for _, vmss := range vmsses {
 				vmssVMs, err := utils.ListVMSSVMs(tc, *vmss.Name)
 				Expect(err).NotTo(HaveOccurred())
 
-				for _, vmssVM := range *vmssVMs {
+				for _, vmssVM := range vmssVMs {
 					nodeName, err := utils.GetVMSSVMComputerName(vmssVM)
 					Expect(err).NotTo(HaveOccurred())
 
@@ -181,11 +181,11 @@ var _ = Describe("Azure node resources", func() {
 		utils.Logf("getting all NICs of VMSSes")
 		var vmssAllNics []network.Interface
 		vmssVMs := make([]compute.VirtualMachineScaleSetVM, 0)
-		if vmsses != nil && len(*vmsses) != 0 {
-			for _, vmss := range *vmsses {
+		if len(vmsses) != 0 {
+			for _, vmss := range vmsses {
 				vmssVMList, err := utils.ListVMSSVMs(tc, *vmss.Name)
 				Expect(err).NotTo(HaveOccurred())
-				vmssVMs = append(vmssVMs, *vmssVMList...)
+				vmssVMs = append(vmssVMs, vmssVMList...)
 
 				vmssNics, err := utils.ListVMSSNICs(tc, *vmss.Name)
 				Expect(err).NotTo(HaveOccurred())

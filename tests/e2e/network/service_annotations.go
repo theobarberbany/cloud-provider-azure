@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2020-08-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
 	"github.com/Azure/go-autorest/autorest/to"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/util/retry"
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
 	"sigs.k8s.io/cloud-provider-azure/tests/e2e/utils"
@@ -85,6 +86,10 @@ var _ = Describe("Service with annotation", func() {
 		utils.Logf("Creating deployment " + serviceName)
 		deployment := createNginxDeploymentManifest(serviceName, labels)
 		_, err = cs.AppsV1().Deployments(ns.Name).Create(context.TODO(), deployment, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred())
+
+		utils.Logf("Waiting for backend pods to be ready")
+		err = utils.WaitPodsToBeReady(cs, ns.Name)
 		Expect(err).NotTo(HaveOccurred())
 
 		utils.Logf("Creating Azure clients")
@@ -164,7 +169,8 @@ var _ = Describe("Service with annotation", func() {
 
 	It("should support service annotation 'service.beta.kubernetes.io/azure-load-balancer-internal-subnet'", func() {
 		By("creating environment")
-		subnetName := "lb-subnet"
+		// This subnetName verifies a bug fix in an issue: https://github.com/kubernetes-sigs/cloud-provider-azure/issues/1443
+		subnetName := "a--------------------------------------------------z"
 
 		vNet, err := tc.GetClusterVirtualNetwork()
 		Expect(err).NotTo(HaveOccurred())
@@ -182,7 +188,7 @@ var _ = Describe("Service with annotation", func() {
 			By("Test subnet doesn't exist. Creating a new one...")
 			newSubnetCIDR, err = utils.GetNextSubnetCIDR(vNet)
 			Expect(err).NotTo(HaveOccurred())
-			err = tc.CreateSubnet(vNet, &subnetName, &newSubnetCIDR)
+			_, err = tc.CreateSubnet(vNet, &subnetName, &newSubnetCIDR, false)
 			Expect(err).NotTo(HaveOccurred())
 			defer func() {
 				utils.Logf("cleaning up test subnet %s", subnetName)
@@ -261,7 +267,7 @@ var _ = Describe("Service with annotation", func() {
 		pip, err := utils.WaitCreatePIP(tc, testPIPName, *rg.Name, defaultPublicIPAddress(testPIPName))
 		Expect(err).NotTo(HaveOccurred())
 		defer func() {
-			By("Cleaning up service and public IP")
+			utils.Logf("Cleaning up service and public IP")
 			err = utils.DeleteService(cs, ns.Name, serviceName)
 			Expect(err).NotTo(HaveOccurred())
 			err = utils.DeletePIPWithRetry(tc, testPIPName, *rg.Name)
@@ -410,11 +416,76 @@ var _ = Describe("Service with annotation", func() {
 		_, err = utils.WaitServiceExposureAndValidateConnectivity(cs, ns.Name, serviceName, to.String(pip2.IPAddress))
 		Expect(err).NotTo(HaveOccurred())
 	})
+
+	It("should support service annotation 'service.beta.kubernetes.io/azure-load-balancer-health-probe-num-of-probe' and port specific configs", func() {
+		By("Creating a service with health probe annotations")
+		annotation := map[string]string{
+			consts.ServiceAnnotationLoadBalancerHealthProbeNumOfProbe:                                  "5",
+			consts.BuildHealthProbeAnnotationKeyForPort(nginxPort, consts.HealthProbeParamsNumOfProbe): "3",
+		}
+
+		// create service with given annotation and wait it to expose
+		publicIP := createAndExposeDefaultServiceWithAnnotation(cs, serviceName, ns.Name, labels, annotation, ports)
+		defer func() {
+			By("Cleaning up service and public IP")
+			err := utils.DeleteService(cs, ns.Name, serviceName)
+			Expect(err).NotTo(HaveOccurred())
+			err = utils.DeletePIPWithRetry(tc, publicIP, tc.GetResourceGroup())
+			Expect(err).NotTo(HaveOccurred())
+		}()
+
+		var lb *network.LoadBalancer
+		//wait for backend update
+		err := wait.PollImmediate(5*time.Second, 60*time.Second, func() (bool, error) {
+			lb = getAzureLoadBalancerFromPIP(tc, publicIP, tc.GetResourceGroup(), "")
+			return len(*lb.LoadBalancerPropertiesFormat.Probes) == 1, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		By("Validating health probe configs")
+		var numberOfProbes *int32
+		for _, probe := range *lb.Probes {
+			if probe.NumberOfProbes != nil {
+				numberOfProbes = probe.NumberOfProbes
+			}
+		}
+		Expect(*numberOfProbes).To(Equal(int32(3)))
+	})
+	It("should support service annotation 'service.beta.kubernetes.io/azure-load-balancer-health-probe-protocol' and port specific configs", func() {
+		By("Creating a service with health probe annotations")
+		annotation := map[string]string{
+			consts.ServiceAnnotationLoadBalancerHealthProbeProtocol:    "Http",
+			consts.ServiceAnnotationLoadBalancerHealthProbeRequestPath: "/",
+		}
+
+		// create service with given annotation and wait it to expose
+		publicIP := createAndExposeDefaultServiceWithAnnotation(cs, serviceName, ns.Name, labels, annotation, ports)
+		defer func() {
+			By("Cleaning up service and public IP")
+			err := utils.DeleteService(cs, ns.Name, serviceName)
+			Expect(err).NotTo(HaveOccurred())
+			err = utils.DeletePIPWithRetry(tc, publicIP, tc.GetResourceGroup())
+			Expect(err).NotTo(HaveOccurred())
+		}()
+
+		var lb *network.LoadBalancer
+		//wait for backend update
+		err := wait.PollImmediate(5*time.Second, 60*time.Second, func() (bool, error) {
+			lb = getAzureLoadBalancerFromPIP(tc, publicIP, tc.GetResourceGroup(), "")
+			return len(*lb.LoadBalancerPropertiesFormat.Probes) == 1, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+		// get lb from azure client
+		By("Validating health probe configs")
+		probes := *lb.Probes
+		Expect((len(probes))).To(Equal(1))
+		Expect(probes[0].Protocol).To(Equal(network.ProbeProtocolHTTP))
+	})
 })
 
 var _ = Describe("[[Multi-Nodepool]][VMSS]", func() {
-	basename := "service"
-	serviceName := "annotation-test"
+	basename := "vmssservice"
+	serviceName := "vmss-test"
 
 	var (
 		cs clientset.Interface
@@ -497,6 +568,153 @@ var _ = Describe("[[Multi-Nodepool]][VMSS]", func() {
 	})
 })
 
+var _ = Describe("Multi-ports service", func() {
+	basename := "mpservice"
+	serviceName := "multiport-test"
+
+	var (
+		cs clientset.Interface
+		tc *utils.AzureTestClient
+		ns *v1.Namespace
+	)
+
+	labels := map[string]string{
+		"app": serviceName,
+	}
+	ports := []v1.ServicePort{{
+		AppProtocol: to.StringPtr("Tcp"),
+		Port:        nginxPort,
+		Name:        "port1",
+		TargetPort:  intstr.FromInt(nginxPort),
+	}, {
+		Port:        nginxPort + 1,
+		Name:        "port2",
+		TargetPort:  intstr.FromInt(nginxPort),
+		AppProtocol: to.StringPtr("Tcp"),
+	},
+	}
+
+	BeforeEach(func() {
+		var err error
+		cs, err = utils.CreateKubeClientSet()
+		Expect(err).NotTo(HaveOccurred())
+
+		ns, err = utils.CreateTestingNamespace(basename, cs)
+		Expect(err).NotTo(HaveOccurred())
+
+		utils.Logf("Creating deployment " + serviceName)
+		deployment := createNginxDeploymentManifest(serviceName, labels)
+		_, err = cs.AppsV1().Deployments(ns.Name).Create(context.TODO(), deployment, metav1.CreateOptions{})
+		Expect(err).NotTo(HaveOccurred())
+
+		utils.Logf("Waiting for backend pods to be ready")
+		err = utils.WaitPodsToBeReady(cs, ns.Name)
+		Expect(err).NotTo(HaveOccurred())
+
+		utils.Logf("Creating Azure clients")
+		tc, err = utils.CreateAzureTestClient()
+		Expect(err).NotTo(HaveOccurred())
+
+	})
+
+	AfterEach(func() {
+		err := cs.AppsV1().Deployments(ns.Name).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
+		Expect(err).NotTo(HaveOccurred())
+
+		err = utils.DeleteNamespace(cs, ns.Name)
+		Expect(err).NotTo(HaveOccurred())
+
+		cs = nil
+		ns = nil
+		tc = nil
+	})
+	Context("When ExternalTrafficPolicy is updated", func() {
+		It("Should not have error occurred", func() {
+			By("Getting the service")
+			annotation := map[string]string{}
+			utils.Logf("Creating service " + serviceName + " in namespace " + ns.Name)
+			service := utils.CreateLoadBalancerServiceManifest(serviceName, annotation, labels, ns.Name, ports)
+			service, err := cs.CoreV1().Services(ns.Name).Create(context.TODO(), service, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			utils.Logf("Successfully created LoadBalancer service " + serviceName + " in namespace " + ns.Name)
+
+			//wait and get service's public IP Address
+			utils.Logf("Waiting service to expose...")
+			publicIP, err := utils.WaitServiceExposureAndValidateConnectivity(cs, ns.Name, serviceName, "")
+			Expect(err).NotTo(HaveOccurred())
+			// create service with given annotation and wait it to expose
+
+			defer func() {
+				By("Cleaning up service and public IP")
+				err := utils.DeleteService(cs, ns.Name, serviceName)
+				Expect(err).NotTo(HaveOccurred())
+				err = utils.DeletePIPWithRetry(tc, publicIP, tc.GetResourceGroup())
+				Expect(err).NotTo(HaveOccurred())
+			}()
+
+			By("Changing ExternalTrafficPolicy of the service to Local")
+
+			utils.Logf("Updating service " + serviceName + " in namespace " + ns.Name)
+			retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				service, err = cs.CoreV1().Services(ns.Name).Get(context.TODO(), serviceName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				service.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeLocal
+				_, err = cs.CoreV1().Services(ns.Name).Update(context.TODO(), service, metav1.UpdateOptions{})
+				return err
+			})
+			Expect(retryErr).NotTo(HaveOccurred())
+			utils.Logf("Successfully updated LoadBalancer service " + serviceName + " in namespace " + ns.Name)
+
+			By("Getting updated service object from server")
+			retryErr = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				service, err = cs.CoreV1().Services(ns.Name).Get(context.TODO(), serviceName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				if service.Spec.HealthCheckNodePort == 0 {
+					return fmt.Errorf("service HealthCheckNodePort is not updated")
+				}
+				return nil
+			})
+			Expect(retryErr).NotTo(HaveOccurred())
+
+			var lb *network.LoadBalancer
+			//wait for backend update
+			err = wait.PollImmediate(5*time.Second, 60*time.Second, func() (bool, error) {
+				lb = getAzureLoadBalancerFromPIP(tc, publicIP, tc.GetResourceGroup(), "")
+				return len(*lb.LoadBalancerPropertiesFormat.Probes) == 1 && *(*lb.LoadBalancerPropertiesFormat.Probes)[0].Port == service.Spec.HealthCheckNodePort, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			var nodeHealthCheckPort = service.Spec.HealthCheckNodePort
+			By("Changing ExternalTrafficPolicy of the service to Cluster")
+			utils.Logf("Updating service " + serviceName + " in namespace " + ns.Name)
+			retryErr = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				service, err = cs.CoreV1().Services(ns.Name).Get(context.TODO(), serviceName, metav1.GetOptions{})
+				if err != nil {
+					return err
+				}
+				service.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeCluster
+				_, err = cs.CoreV1().Services(ns.Name).Update(context.TODO(), service, metav1.UpdateOptions{})
+				return err
+			})
+			Expect(retryErr).NotTo(HaveOccurred())
+			utils.Logf("Successfully updated LoadBalancer service " + serviceName + " in namespace " + ns.Name)
+
+			//wait for backend update
+			err = wait.PollImmediate(5*time.Second, 60*time.Second, func() (bool, error) {
+				lb := getAzureLoadBalancerFromPIP(tc, publicIP, tc.GetResourceGroup(), "")
+				return len(*lb.LoadBalancerPropertiesFormat.Probes) == 2 &&
+					*(*lb.LoadBalancerPropertiesFormat.Probes)[0].Port != nodeHealthCheckPort &&
+					*(*lb.LoadBalancerPropertiesFormat.Probes)[1].Port != nodeHealthCheckPort, nil
+			})
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+})
+
 func waitComparePIPTags(tc *utils.AzureTestClient, expectedTags map[string]*string, pipName string) error {
 	err := wait.PollImmediate(10*time.Second, 10*time.Minute, func() (done bool, err error) {
 		pip, err := utils.WaitGetPIP(tc, pipName)
@@ -505,8 +723,19 @@ func waitComparePIPTags(tc *utils.AzureTestClient, expectedTags map[string]*stri
 		}
 		tags := pip.Tags
 		delete(tags, consts.ClusterNameKey)
+		delete(tags, consts.LegacyClusterNameKey)
 		delete(tags, consts.ServiceTagKey)
-		utils.Logf("\ntags: %v\nexpectedTags: %v", tags, expectedTags)
+		delete(tags, consts.LegacyServiceTagKey)
+
+		printTags := func(name string, ts map[string]*string) {
+			msg := ""
+			for t := range ts {
+				msg += fmt.Sprintf("%s:%s ", t, *ts[t])
+			}
+			utils.Logf("%s: [%s]", name, msg)
+		}
+		printTags("tags", tags)
+		printTags("expectedTags", expectedTags)
 		return reflect.DeepEqual(tags, expectedTags), nil
 	})
 	return err
@@ -557,7 +786,7 @@ func createAndExposeDefaultServiceWithAnnotation(cs clientset.Interface, service
 	Expect(err).NotTo(HaveOccurred())
 	utils.Logf("Successfully created LoadBalancer service " + serviceName + " in namespace " + nsName)
 
-	//wait and get service's public IP Address
+	//wait and get service's IP Address
 	utils.Logf("Waiting service to expose...")
 	publicIP, err := utils.WaitServiceExposureAndValidateConnectivity(cs, nsName, serviceName, "")
 	Expect(err).NotTo(HaveOccurred())

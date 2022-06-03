@@ -111,6 +111,7 @@ If more than one value is set, the order is `Managed Identity` > `Service Princi
 | systemTags                                                 | Tag keys that should not be deleted when being updated.                                                                                                                                                           | Optional. Supported since v1.21.0.                                                                                                    |
 | enableMultipleStandardLoadBalancers                        | Enable multiple standard Load Balancers per cluster.                                                                                                                                                              | Optional. Supported since v1.20.0                                                                                                     |
 | loadBalancerBackendPoolConfigurationType                   | The type of the Load Balancer backend pool. Supported values are `nodeIPConfiguration` (default) and `nodeIP`                                                                                                     | Optional. Supported since v1.23.0                                                                                                     |
+| putVMSSVMBatchSize                                         | The number of requests the client sends concurrently in a batch when putting the VMSS VMs. Anything smaller than or equal to 0 means to update VMSS VMs one by one in sequence.                                   | Optional. Supported since v1.24.0.                                                                                                    |
 
 ### primaryAvailabilitySetName
 
@@ -193,6 +194,15 @@ Since v1.18.0, the original global rate limiting has been switched to per-client
 - SnapshotRateLimit
 - VirtualMachineScaleSetRateLimit
 - VirtualMachineSizeRateLimit
+- AvailabilitySetRateLimit
+- AttachDetachDiskRateLimit
+- ContainerServiceRateLimit
+- DeploymentRateLimit
+- PrivateDNSRateLimit
+- PrivateDNSZoneGroupRateLimit
+- PrivateEndpointRateLimit
+- PrivateLinkServiceRateLimit
+- VirtualNetworkRateLimit
 
 The original rate limiting options ("cloudProviderRateLimitBucket", "cloudProviderRateLimitBucketWrite", "cloudProviderRateLimitQPS", "cloudProviderRateLimitQPSWrite") are still supported, and they would be the default values if per-client rate limiting is not configured.
 
@@ -224,7 +234,7 @@ Here is an example of per-client config:
 
 When running Kubelet with kube-controller-manager, it also supports running without Azure identity since v1.15.0.
 
-Both kube-controller-manager and kubelet should configure `--cloud-provider=azure --cloud-config=/etc/kubernetes/azure.json`, but the contents for `azure.json` are different:
+Both kube-controller-manager and kubelet should configure `--cloud-provider=azure --cloud-config=/etc/kubernetes/cloud-config/azure.json`, but the contents for `azure.json` are different:
 
 (1) For kube-controller-manager, refer the above part for setting `azure.json`.
 

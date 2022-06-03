@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2021-07-01/compute"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -42,6 +42,9 @@ var (
 func TestStandardAttachDisk(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
+
+	ctx, cancel := getContextWithCancel()
+	defer cancel()
 
 	testCases := []struct {
 		desc         string
@@ -109,7 +112,7 @@ func TestStandardAttachDisk(t *testing.T) {
 		diskMap := map[string]*AttachDiskOptions{
 			"uri": &options,
 		}
-		_, err := vmSet.AttachDisk(test.nodeName, diskMap)
+		_, err := vmSet.AttachDisk(ctx, test.nodeName, diskMap)
 		assert.Equal(t, test.expectedErr, err != nil, "TestCase[%d]: %s, err: %v", i, test.desc, err)
 	}
 }
@@ -117,6 +120,9 @@ func TestStandardAttachDisk(t *testing.T) {
 func TestStandardDetachDisk(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
+
+	ctx, cancel := getContextWithCancel()
+	defer cancel()
 
 	testCases := []struct {
 		desc          string
@@ -177,7 +183,7 @@ func TestStandardDetachDisk(t *testing.T) {
 				testCloud.SubscriptionID, testCloud.ResourceGroup, diskName)
 			diskMap[diskURI] = diskName
 		}
-		err := vmSet.DetachDisk(test.nodeName, diskMap)
+		err := vmSet.DetachDisk(ctx, test.nodeName, diskMap)
 		assert.Equal(t, test.expectedError, err != nil, "TestCase[%d]: %s", i, test.desc)
 		if !test.expectedError && len(test.disks) > 0 {
 			dataDisks, _, err := vmSet.GetDataDisks(test.nodeName, azcache.CacheReadTypeDefault)
@@ -189,6 +195,9 @@ func TestStandardDetachDisk(t *testing.T) {
 func TestStandardUpdateVM(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
+
+	ctx, cancel := getContextWithCancel()
+	defer cancel()
 
 	testCases := []struct {
 		desc          string
@@ -237,7 +246,7 @@ func TestStandardUpdateVM(t *testing.T) {
 			mockVMsClient.EXPECT().Update(gomock.Any(), testCloud.ResourceGroup, gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 		}
 
-		err := vmSet.UpdateVM(test.nodeName)
+		err := vmSet.UpdateVM(ctx, test.nodeName)
 		assert.Equal(t, test.expectedError, err != nil, "TestCase[%d]: %s", i, test.desc)
 		if !test.expectedError && test.diskName != "" {
 			dataDisks, _, err := vmSet.GetDataDisks(test.nodeName, azcache.CacheReadTypeDefault)

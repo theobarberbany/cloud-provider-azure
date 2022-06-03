@@ -20,6 +20,7 @@ package privatelinkserviceclient
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -30,7 +31,7 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
 	"github.com/Azure/go-autorest/autorest"
 	azclients "sigs.k8s.io/cloud-provider-azure/pkg/azureclients"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/armclient"
@@ -39,7 +40,8 @@ import (
 )
 
 const (
-	testResourceID = "/subscriptions/subscriptionID/resourceGroups/rg/providers/" + PLSResourceKinkd + "/pls1"
+	testResourceID     = "/subscriptions/subscriptionID/resourceGroups/rg/providers/" + PLSResourceType + "/pls1"
+	testResourcePrefix = "/subscriptions/subscriptionID/resourceGroups/rg/providers/" + PLSResourceType
 )
 
 func TestNew(t *testing.T) {
@@ -93,7 +95,7 @@ func TestGetNotFound(t *testing.T) {
 		Body:       ioutil.NopCloser(bytes.NewReader([]byte("{}"))),
 	}
 	armClient := mockarmclient.NewMockInterface(ctrl)
-	armClient.EXPECT().GetResource(gomock.Any(), testResourceID, "").Return(response, nil).Times(1)
+	armClient.EXPECT().GetResourceWithExpandQuery(gomock.Any(), testResourceID, "").Return(response, nil).Times(1)
 	armClient.EXPECT().CloseResponse(gomock.Any(), gomock.Any()).Times(1)
 
 	plsClient := getTestPrivateLinkServiceClient(armClient)
@@ -113,7 +115,7 @@ func TestGetInternalError(t *testing.T) {
 		Body:       ioutil.NopCloser(bytes.NewReader([]byte("{}"))),
 	}
 	armClient := mockarmclient.NewMockInterface(ctrl)
-	armClient.EXPECT().GetResource(gomock.Any(), testResourceID, "").Return(response, nil).Times(1)
+	armClient.EXPECT().GetResourceWithExpandQuery(gomock.Any(), testResourceID, "").Return(response, nil).Times(1)
 	armClient.EXPECT().CloseResponse(gomock.Any(), gomock.Any()).Times(1)
 
 	plsClient := getTestPrivateLinkServiceClient(armClient)
@@ -139,13 +141,125 @@ func TestGetThrottle(t *testing.T) {
 		RetryAfter:     time.Unix(100, 0),
 	}
 	armClient := mockarmclient.NewMockInterface(ctrl)
-	armClient.EXPECT().GetResource(gomock.Any(), testResourceID, "").Return(response, throttleErr).Times(1)
+	armClient.EXPECT().GetResourceWithExpandQuery(gomock.Any(), testResourceID, "").Return(response, throttleErr).Times(1)
 	armClient.EXPECT().CloseResponse(gomock.Any(), gomock.Any()).Times(1)
 
 	plsClient := getTestPrivateLinkServiceClient(armClient)
 	result, rerr := plsClient.Get(context.TODO(), "rg", "pls1", "")
 	assert.Empty(t, result)
 	assert.Equal(t, throttleErr, rerr)
+}
+
+func TestList(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	armClient := mockarmclient.NewMockInterface(ctrl)
+	plsList := []network.PrivateLinkService{getTestPrivateLinkService("pls1"), getTestPrivateLinkService("pls2"), getTestPrivateLinkService("pls3")}
+	responseBody, err := json.Marshal(network.PrivateLinkServiceListResult{Value: &plsList})
+	assert.NoError(t, err)
+	armClient.EXPECT().GetResource(gomock.Any(), testResourcePrefix).Return(
+		&http.Response{
+			StatusCode: http.StatusOK,
+			Body:       ioutil.NopCloser(bytes.NewReader(responseBody)),
+		}, nil).Times(1)
+	armClient.EXPECT().CloseResponse(gomock.Any(), gomock.Any()).Times(1)
+
+	plsClient := getTestPrivateLinkServiceClient(armClient)
+	result, rerr := plsClient.List(context.TODO(), "rg")
+	assert.Nil(t, rerr)
+	assert.Equal(t, 3, len(result))
+
+	response := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       ioutil.NopCloser(bytes.NewReader([]byte("{}"))),
+	}
+	throttleErr := &retry.Error{
+		HTTPStatusCode: http.StatusTooManyRequests,
+		RawError:       fmt.Errorf("error"),
+		Retriable:      true,
+		RetryAfter:     time.Unix(100, 0),
+	}
+	armClient.EXPECT().GetResource(gomock.Any(), testResourcePrefix).Return(response, throttleErr).Times(1)
+	armClient.EXPECT().CloseResponse(gomock.Any(), gomock.Any()).Times(1)
+	_, rerr = plsClient.List(context.TODO(), "rg")
+	assert.Equal(t, throttleErr, rerr)
+}
+
+func TestListWithNextPage(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	armClient := mockarmclient.NewMockInterface(ctrl)
+	plsList := []network.PrivateLinkService{getTestPrivateLinkService("pls1"), getTestPrivateLinkService("pls2"), getTestPrivateLinkService("pls3")}
+	partialResponse, err := json.Marshal(network.PrivateLinkServiceListResult{Value: &plsList, NextLink: to.StringPtr("nextLink")})
+	assert.NoError(t, err)
+	_, err = json.Marshal(network.PrivateLinkServiceListResult{Value: &plsList})
+	assert.NoError(t, err)
+	armClient.EXPECT().GetResource(gomock.Any(), testResourcePrefix).Return(
+		&http.Response{
+			StatusCode: http.StatusOK,
+			Body:       ioutil.NopCloser(bytes.NewReader(partialResponse)),
+		}, nil).Times(1)
+	armClient.EXPECT().CloseResponse(gomock.Any(), gomock.Any()).Times(1)
+
+	plsClient := getTestPrivateLinkServiceClient(armClient)
+	result, rerr := plsClient.List(context.TODO(), "rg")
+	assert.Nil(t, rerr)
+	assert.Equal(t, 3, len(result))
+}
+
+func TestListNextResultsMultiPages(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tests := []struct {
+		prepareErr error
+		sendErr    *retry.Error
+	}{
+		{
+			prepareErr: nil,
+			sendErr:    nil,
+		},
+		{
+			prepareErr: fmt.Errorf("error"),
+		},
+		{
+			sendErr: &retry.Error{RawError: fmt.Errorf("error")},
+		},
+	}
+
+	lastResult := network.PrivateLinkServiceListResult{
+		NextLink: to.StringPtr("next"),
+	}
+
+	for _, test := range tests {
+		armClient := mockarmclient.NewMockInterface(ctrl)
+		req := &http.Request{
+			Method: "GET",
+		}
+		armClient.EXPECT().PrepareGetRequest(gomock.Any(), gomock.Any()).Return(req, test.prepareErr)
+		if test.prepareErr == nil {
+			armClient.EXPECT().Send(gomock.Any(), req).Return(&http.Response{
+				StatusCode: http.StatusOK,
+				Body:       ioutil.NopCloser(bytes.NewReader([]byte(`{"foo":"bar"}`))),
+			}, test.sendErr)
+			armClient.EXPECT().CloseResponse(gomock.Any(), gomock.Any())
+		}
+
+		plsClient := getTestPrivateLinkServiceClient(armClient)
+		result, err := plsClient.listNextResults(context.TODO(), lastResult)
+		if test.prepareErr != nil || test.sendErr != nil {
+			assert.Error(t, err)
+		} else {
+			assert.NoError(t, err)
+		}
+		if test.prepareErr != nil {
+			assert.Empty(t, result)
+		} else {
+			assert.NotEmpty(t, result)
+		}
+	}
 }
 
 func TestCreateOrUpdate(t *testing.T) {
@@ -197,11 +311,49 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+func TestDeletePEConnection(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	tests := []struct {
+		description  string
+		armClientErr *retry.Error
+		expectedErr  *retry.Error
+	}{
+		{
+			description:  "Delete should report the throttling error",
+			armClientErr: &retry.Error{HTTPStatusCode: http.StatusTooManyRequests},
+			expectedErr:  &retry.Error{HTTPStatusCode: http.StatusTooManyRequests},
+		},
+		{
+			description: "Delete should not report any error if there's no error from arm client",
+		},
+	}
+
+	peConn := getTestPrivateEndpointConnection("pls1", "peconn")
+
+	for _, test := range tests {
+		armClient := mockarmclient.NewMockInterface(ctrl)
+		armClient.EXPECT().DeleteResource(gomock.Any(), to.String(peConn.ID), "").Return(test.armClientErr)
+
+		plsClient := getTestPrivateLinkServiceClient(armClient)
+		rerr := plsClient.DeletePEConnection(context.TODO(), "rg", "pls1", "peconn")
+		assert.Equal(t, test.expectedErr, rerr)
+	}
+}
+
 func getTestPrivateLinkService(name string) network.PrivateLinkService {
 	return network.PrivateLinkService{
-		ID:       to.StringPtr(fmt.Sprintf("/subscriptions/subscriptionID/resourceGroups/rg/providers/"+PLSResourceKinkd+"/%s", name)),
+		ID:       to.StringPtr(fmt.Sprintf("/subscriptions/subscriptionID/resourceGroups/rg/providers/%s/%s", PLSResourceType, name)),
 		Name:     to.StringPtr(name),
 		Location: to.StringPtr("eastus"),
+	}
+}
+
+func getTestPrivateEndpointConnection(PLSName string, PEConnName string) network.PrivateEndpointConnection {
+	return network.PrivateEndpointConnection{
+		ID:   to.StringPtr(fmt.Sprintf("/subscriptions/subscriptionID/resourceGroups/rg/providers/%s/%s/%s/%s", PLSResourceType, PLSName, PEConnResourceType, PEConnName)),
+		Name: to.StringPtr(PEConnName),
 	}
 }
 

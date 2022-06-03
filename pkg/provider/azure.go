@@ -17,7 +17,6 @@ limitations under the License.
 package provider
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -33,10 +32,8 @@ import (
 	"github.com/Azure/go-autorest/autorest/azure"
 
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
-	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -49,6 +46,8 @@ import (
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/auth"
 	azclients "sigs.k8s.io/cloud-provider-azure/pkg/azureclients"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/containerserviceclient"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/deploymentclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/diskclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/fileclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/interfaceclient"
@@ -56,6 +55,7 @@ import (
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/privatednsclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/privatednszonegroupclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/privateendpointclient"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/privatelinkserviceclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/publicipclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/routeclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/routetableclient"
@@ -72,6 +72,7 @@ import (
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/zoneclient"
 	azcache "sigs.k8s.io/cloud-provider-azure/pkg/cache"
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
+	nodemanager "sigs.k8s.io/cloud-provider-azure/pkg/nodemanager"
 	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
 
 	// ensure the newly added package from azure-sdk-for-go is in vendor/
@@ -227,8 +228,12 @@ type Config struct {
 	NsgCacheTTLInSeconds int `json:"nsgCacheTTLInSeconds,omitempty" yaml:"nsgCacheTTLInSeconds,omitempty"`
 	// RouteTableCacheTTLInSeconds sets the cache TTL for route table
 	RouteTableCacheTTLInSeconds int `json:"routeTableCacheTTLInSeconds,omitempty" yaml:"routeTableCacheTTLInSeconds,omitempty"`
+	// PlsCacheTTLInSeconds sets the cache TTL for private link service resource
+	PlsCacheTTLInSeconds int `json:"plsCacheTTLInSeconds,omitempty" yaml:"plsCacheTTLInSeconds,omitempty"`
 	// AvailabilitySetsCacheTTLInSeconds sets the cache TTL for VMAS
 	AvailabilitySetsCacheTTLInSeconds int `json:"availabilitySetsCacheTTLInSeconds,omitempty" yaml:"availabilitySetsCacheTTLInSeconds,omitempty"`
+	// PublicIPCacheTTLInSeconds sets the cache TTL for public ip
+	PublicIPCacheTTLInSeconds int `json:"publicIPCacheTTLInSeconds,omitempty" yaml:"publicIPCacheTTLInSeconds,omitempty"`
 	// RouteUpdateWaitingInSeconds is the delay time for waiting route updates to take effect. This waiting delay is added
 	// because the routes are not taken effect when the async route updating operation returns success. Default is 30 seconds.
 	RouteUpdateWaitingInSeconds int `json:"routeUpdateWaitingInSeconds,omitempty" yaml:"routeUpdateWaitingInSeconds,omitempty"`
@@ -240,6 +245,11 @@ type Config struct {
 	// `nodeIP`: vm private IPs will be attached to the inbound backend pool of the load balancer;
 	// `podIP`: pod IPs will be attached to the inbound backend pool of the load balancer (not supported yet).
 	LoadBalancerBackendPoolConfigurationType string `json:"loadBalancerBackendPoolConfigurationType,omitempty" yaml:"loadBalancerBackendPoolConfigurationType,omitempty"`
+	// PutVMSSVMBatchSize defines how many requests the client send concurrently when putting the VMSS VMs.
+	// If it is smaller than or equal to zero, the request will be sent one by one in sequence (default).
+	PutVMSSVMBatchSize int `json:"putVMSSVMBatchSize" yaml:"putVMSSVMBatchSize"`
+	// PrivateLinkServiceResourceGroup determines the specific resource group of the private link services user want to use
+	PrivateLinkServiceResourceGroup string `json:"privateLinkServiceResourceGroup,omitempty" yaml:"privateLinkServiceResourceGroup,omitempty"`
 }
 
 type InitSecretConfig struct {
@@ -289,6 +299,9 @@ type Cloud struct {
 	privatednsclient                privatednsclient.Interface
 	privatednszonegroupclient       privatednszonegroupclient.Interface
 	virtualNetworkLinksClient       virtualnetworklinksclient.Interface
+	PrivateLinkServiceClient        privatelinkserviceclient.Interface
+	containerServiceClient          containerserviceclient.Interface
+	deploymentClient                deploymentclient.Interface
 
 	ResourceRequestBackoff  wait.Backoff
 	Metadata                *InstanceMetadataService
@@ -334,6 +347,9 @@ type Cloud struct {
 	lbCache  *azcache.TimedCache
 	nsgCache *azcache.TimedCache
 	rtCache  *azcache.TimedCache
+	pipCache *azcache.TimedCache
+	// use LB frontEndIpConfiguration ID as the key and search for PLS attached to the frontEnd
+	plsCache *azcache.TimedCache
 
 	*ManagedDiskController
 	*controllerCommon
@@ -361,7 +377,7 @@ func NewCloud(configReader io.Reader, callFromCCM bool) (cloudprovider.Interface
 	if err != nil {
 		return nil, err
 	}
-	az.ipv6DualStackEnabled = utilfeature.DefaultFeatureGate.Enabled(consts.IPv6DualStack)
+	az.ipv6DualStackEnabled = true
 
 	return az, nil
 }
@@ -436,7 +452,7 @@ func NewCloudFromSecret(clientBuilder cloudprovider.ControllerClientBuilder, sec
 		return nil, fmt.Errorf("NewCloudFromSecret: failed to initialize cloud from secret %s/%s: %v", az.SecretNamespace, az.SecretName, err)
 	}
 
-	az.ipv6DualStackEnabled = utilfeature.DefaultFeatureGate.Enabled(consts.IPv6DualStack)
+	az.ipv6DualStackEnabled = true
 
 	return az, nil
 }
@@ -480,6 +496,10 @@ func (az *Cloud) InitializeCloudFromConfig(config *Config, fromSecret, callFromC
 
 	if config.SecurityGroupResourceGroup == "" {
 		config.SecurityGroupResourceGroup = config.ResourceGroup
+	}
+
+	if config.PrivateLinkServiceResourceGroup == "" {
+		config.PrivateLinkServiceResourceGroup = config.ResourceGroup
 	}
 
 	if config.VMType == "" {
@@ -640,6 +660,10 @@ func (az *Cloud) isLBBackendPoolTypeNodeIP() bool {
 	return strings.EqualFold(az.LoadBalancerBackendPoolConfigurationType, consts.LoadBalancerBackendPoolConfigurationTypeNodeIP)
 }
 
+func (az *Cloud) getPutVMSSVMBatchSize() int {
+	return az.PutVMSSVMBatchSize
+}
+
 func (az *Cloud) initCaches() (err error) {
 	az.vmCache, err = az.newVMCache()
 	if err != nil {
@@ -657,6 +681,16 @@ func (az *Cloud) initCaches() (err error) {
 	}
 
 	az.rtCache, err = az.newRouteTableCache()
+	if err != nil {
+		return err
+	}
+
+	az.pipCache, err = az.newPIPCache()
+	if err != nil {
+		return err
+	}
+
+	az.plsCache, err = az.newPLSCache()
 	if err != nil {
 		return err
 	}
@@ -687,7 +721,7 @@ func (az *Cloud) configureMultiTenantClients(servicePrincipalToken *adal.Service
 	var err error
 	var multiTenantServicePrincipalToken *adal.MultiTenantServicePrincipalToken
 	var networkResourceServicePrincipalToken *adal.ServicePrincipalToken
-	if az.Config.UsesNetworkResourceInDifferentTenant() {
+	if az.Config.UsesNetworkResourceInDifferentTenantOrSubscription() {
 		multiTenantServicePrincipalToken, err = auth.GetMultiTenantServicePrincipalToken(&az.Config.AzureAuthConfig, &az.Environment)
 		if err != nil {
 			return err
@@ -766,6 +800,13 @@ func (az *Cloud) configAzureClients(
 	loadBalancerClientConfig := azClientConfig.WithRateLimiter(az.Config.LoadBalancerRateLimit)
 	securityGroupClientConfig := azClientConfig.WithRateLimiter(az.Config.SecurityGroupRateLimit)
 	publicIPClientConfig := azClientConfig.WithRateLimiter(az.Config.PublicIPAddressRateLimit)
+	containerServiceConfig := azClientConfig.WithRateLimiter(az.Config.ContainerServiceRateLimit)
+	deploymentConfig := azClientConfig.WithRateLimiter(az.Config.DeploymentRateLimit)
+	privateDNSConfig := azClientConfig.WithRateLimiter(az.Config.PrivateDNSRateLimit)
+	privateDNSZoenGroupConfig := azClientConfig.WithRateLimiter(az.Config.PrivateDNSZoneGroupRateLimit)
+	privateEndpointConfig := azClientConfig.WithRateLimiter(az.Config.PrivateEndpointRateLimit)
+	privateLinkServiceConfig := azClientConfig.WithRateLimiter(az.Config.PrivateLinkServiceRateLimit)
+	virtualNetworkConfig := azClientConfig.WithRateLimiter(az.Config.VirtualNetworkRateLimit)
 	// TODO(ZeroMagic): add azurefileRateLimit
 	fileClientConfig := azClientConfig.WithRateLimiter(nil)
 	vmasClientConfig := azClientConfig.WithRateLimiter(az.Config.AvailabilitySetRateLimit)
@@ -815,10 +856,13 @@ func (az *Cloud) configAzureClients(
 	az.PublicIPAddressesClient = publicipclient.New(publicIPClientConfig)
 	az.FileClient = fileclient.New(fileClientConfig)
 	az.AvailabilitySetsClient = vmasclient.New(vmasClientConfig)
-	az.privateendpointclient = privateendpointclient.New(azClientConfig)
-	az.privatednsclient = privatednsclient.New(azClientConfig)
-	az.privatednszonegroupclient = privatednszonegroupclient.New(azClientConfig)
-	az.virtualNetworkLinksClient = virtualnetworklinksclient.New(azClientConfig)
+	az.privateendpointclient = privateendpointclient.New(privateEndpointConfig)
+	az.privatednsclient = privatednsclient.New(privateDNSConfig)
+	az.privatednszonegroupclient = privatednszonegroupclient.New(privateDNSZoenGroupConfig)
+	az.virtualNetworkLinksClient = virtualnetworklinksclient.New(virtualNetworkConfig)
+	az.PrivateLinkServiceClient = privatelinkserviceclient.New(privateLinkServiceConfig)
+	az.containerServiceClient = containerserviceclient.New(containerServiceConfig)
+	az.deploymentClient = deploymentclient.New(deploymentConfig)
 
 	if az.ZoneClient == nil {
 		az.ZoneClient = zoneclient.New(zoneClientConfig)
@@ -1031,16 +1075,20 @@ func (az *Cloud) updateNodeCaches(prevNode, newNode *v1.Node) {
 			delete(az.nodeResourceGroups, prevNode.ObjectMeta.Name)
 		}
 
-		// Remove from unmanagedNodes cache.
 		managed, ok := prevNode.ObjectMeta.Labels[consts.ManagedByAzureLabel]
-		if ok && strings.EqualFold(managed, consts.NotManagedByAzureLabelValue) {
+		isNodeManagedByCloudProvider := !ok || !strings.EqualFold(managed, consts.NotManagedByAzureLabelValue)
+
+		klog.Infof("managed=%v, ok=%v, isNodeManagedByCloudProvider=%v",
+			managed, ok, isNodeManagedByCloudProvider)
+
+		// Remove from unmanagedNodes cache
+		if !isNodeManagedByCloudProvider {
 			az.unmanagedNodes.Delete(prevNode.ObjectMeta.Name)
-			az.excludeLoadBalancerNodes.Delete(prevNode.ObjectMeta.Name)
 		}
 
-		// Remove from excludeLoadBalancerNodes cache.
-		if _, hasExcludeBalancerLabel := prevNode.ObjectMeta.Labels[v1.LabelNodeExcludeBalancers]; hasExcludeBalancerLabel {
-			az.excludeLoadBalancerNodes.Delete(prevNode.ObjectMeta.Name)
+		// if the node is being deleted from the cluster, exclude it from load balancers
+		if newNode == nil {
+			az.excludeLoadBalancerNodes.Insert(prevNode.ObjectMeta.Name)
 		}
 
 		// Remove from nodePrivateIPs cache.
@@ -1069,17 +1117,35 @@ func (az *Cloud) updateNodeCaches(prevNode, newNode *v1.Node) {
 			az.nodeResourceGroups[newNode.ObjectMeta.Name] = strings.ToLower(newRG)
 		}
 
-		// Add to unmanagedNodes cache.
+		_, hasExcludeBalancerLabel := newNode.ObjectMeta.Labels[v1.LabelNodeExcludeBalancers]
 		managed, ok := newNode.ObjectMeta.Labels[consts.ManagedByAzureLabel]
-		if ok && strings.EqualFold(managed, consts.NotManagedByAzureLabelValue) {
+		isNodeManagedByCloudProvider := !ok || !strings.EqualFold(managed, consts.NotManagedByAzureLabelValue)
+
+		// Update unmanagedNodes cache
+		if !isNodeManagedByCloudProvider {
 			az.unmanagedNodes.Insert(newNode.ObjectMeta.Name)
-			az.excludeLoadBalancerNodes.Insert(newNode.ObjectMeta.Name)
 		}
 
-		// Add to excludeLoadBalancerNodes cache.
-		if _, hasExcludeBalancerLabel := newNode.ObjectMeta.Labels[v1.LabelNodeExcludeBalancers]; hasExcludeBalancerLabel {
-			klog.V(4).Infof("adding node %s from the exclude-from-lb list because the label %s is found", newNode.Name, v1.LabelNodeExcludeBalancers)
+		// Update excludeLoadBalancerNodes cache
+		switch {
+		case !isNodeManagedByCloudProvider:
 			az.excludeLoadBalancerNodes.Insert(newNode.ObjectMeta.Name)
+
+		case hasExcludeBalancerLabel:
+			az.excludeLoadBalancerNodes.Insert(newNode.ObjectMeta.Name)
+
+		case !isNodeReady(newNode) && nodemanager.GetCloudTaint(newNode.Spec.Taints) == nil:
+			// If not in ready state and not a newly created node, add to excludeLoadBalancerNodes cache.
+			// New nodes (tainted with "node.cloudprovider.kubernetes.io/uninitialized") should not be
+			// excluded from load balancers regardless of their state, so as to reduce the number of
+			// VMSS API calls and not provoke VMScaleSetActiveModelsCountLimitReached.
+			// (https://github.com/kubernetes-sigs/cloud-provider-azure/issues/851)
+			az.excludeLoadBalancerNodes.Insert(newNode.ObjectMeta.Name)
+
+		default:
+			// Nodes not falling into the three cases above are valid backends and
+			// should not appear in excludeLoadBalancerNodes cache.
+			az.excludeLoadBalancerNodes.Delete(newNode.ObjectMeta.Name)
 		}
 
 		// Add to nodePrivateIPs cache
@@ -1092,15 +1158,6 @@ func (az *Cloud) updateNodeCaches(prevNode, newNode *v1.Node) {
 			az.nodePrivateIPs[newNode.Name].Insert(address)
 		}
 	}
-}
-
-func (az *Cloud) ListNodes(ctx context.Context) ([]v1.Node, error) {
-	nodes, err := az.KubeClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return []v1.Node{}, fmt.Errorf("ListAllNodes: failed to list nodes: %w", err)
-	}
-
-	return nodes.Items, nil
 }
 
 // GetActiveZones returns all the zones in which k8s nodes are currently running.
@@ -1223,4 +1280,13 @@ func (az *Cloud) ShouldNodeExcludedFromLoadBalancer(nodeName string) (bool, erro
 	}
 
 	return az.excludeLoadBalancerNodes.Has(nodeName), nil
+}
+
+func isNodeReady(node *v1.Node) bool {
+	for _, cond := range node.Status.Conditions {
+		if cond.Type == v1.NodeReady && cond.Status == v1.ConditionTrue {
+			return true
+		}
+	}
+	return false
 }

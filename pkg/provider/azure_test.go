@@ -26,8 +26,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2021-07-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -38,11 +38,13 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/informers"
 	cloudprovider "k8s.io/cloud-provider"
+	cloudproviderapi "k8s.io/cloud-provider/api"
 	servicehelpers "k8s.io/cloud-provider/service/helpers"
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/auth"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/interfaceclient/mockinterfaceclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/loadbalancerclient/mockloadbalancerclient"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/privatelinkserviceclient/mockprivatelinkserviceclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/publicipclient/mockpublicipclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/securitygroupclient/mocksecuritygroupclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/subnetclient/mocksubnetclient"
@@ -320,6 +322,11 @@ func testLoadBalancerServiceDefaultModeSelection(t *testing.T, isInternal bool) 
 
 		expectedLBName := setMockLBs(az, ctrl, &expectedLBs, "service", 1, index, isInternal)
 
+		expectedPLS := make([]network.PrivateLinkService, 0)
+		mockPLSClient := mockprivatelinkserviceclient.NewMockInterface(ctrl)
+		mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
+		az.PrivateLinkServiceClient = mockPLSClient
+
 		lbStatus, err := az.EnsureLoadBalancer(context.TODO(), testClusterName, &svc, clusterResources.nodes)
 		if err != nil {
 			t.Errorf("Unexpected error: %q", err)
@@ -381,6 +388,11 @@ func testLoadBalancerServiceAutoModeSelection(t *testing.T, isInternal bool) {
 		setLoadBalancerAutoModeAnnotation(&svc)
 
 		setMockLBs(az, ctrl, &expectedLBs, "service", availabilitySetCount, index, isInternal)
+
+		expectedPLS := make([]network.PrivateLinkService, 0)
+		mockPLSClient := mockprivatelinkserviceclient.NewMockInterface(ctrl)
+		mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
+		az.PrivateLinkServiceClient = mockPLSClient
 
 		lbStatus, err := az.EnsureLoadBalancer(context.TODO(), testClusterName, &svc, clusterResources.nodes)
 		if err != nil {
@@ -458,6 +470,11 @@ func testLoadBalancerServicesSpecifiedSelection(t *testing.T, isInternal bool) {
 
 		setMockLBs(az, ctrl, &expectedLBs, "service", 1, index, isInternal)
 
+		expectedPLS := make([]network.PrivateLinkService, 0)
+		mockPLSClient := mockprivatelinkserviceclient.NewMockInterface(ctrl)
+		mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
+		az.PrivateLinkServiceClient = mockPLSClient
+
 		lbStatus, err := az.EnsureLoadBalancer(context.TODO(), testClusterName, &svc, clusterResources.nodes)
 		if err != nil {
 			t.Errorf("Unexpected error: %q", err)
@@ -508,6 +525,11 @@ func testLoadBalancerMaxRulesServices(t *testing.T, isInternal bool) {
 		}
 
 		setMockLBs(az, ctrl, &expectedLBs, "service", az.Config.MaximumLoadBalancerRuleCount, index, isInternal)
+
+		expectedPLS := make([]network.PrivateLinkService, 0)
+		mockPLSClient := mockprivatelinkserviceclient.NewMockInterface(ctrl)
+		mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
+		az.PrivateLinkServiceClient = mockPLSClient
 
 		lbStatus, err := az.EnsureLoadBalancer(context.TODO(), testClusterName, &svc, clusterResources.nodes)
 		if err != nil {
@@ -589,6 +611,11 @@ func testLoadBalancerServiceAutoModeDeleteSelection(t *testing.T, isInternal boo
 
 		setMockLBs(az, ctrl, &expectedLBs, "service", availabilitySetCount, index, isInternal)
 
+		expectedPLS := make([]network.PrivateLinkService, 0)
+		mockPLSClient := mockprivatelinkserviceclient.NewMockInterface(ctrl)
+		mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
+		az.PrivateLinkServiceClient = mockPLSClient
+
 		lbStatus, err := az.EnsureLoadBalancer(context.TODO(), testClusterName, &svc, clusterResources.nodes)
 		if err != nil {
 			t.Errorf("Unexpected error: %q", err)
@@ -628,6 +655,11 @@ func testLoadBalancerServiceAutoModeDeleteSelection(t *testing.T, isInternal boo
 		if lbCount != expectedNumOfLB {
 			t.Errorf("Unexpected number of LB's: Expected (%d) Found (%d)", expectedNumOfLB, lbCount)
 		}
+
+		expectedPLS := make([]network.PrivateLinkService, 0)
+		mockPLSClient := mockprivatelinkserviceclient.NewMockInterface(ctrl)
+		mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
+		az.PrivateLinkServiceClient = mockPLSClient
 
 		err := az.EnsureLoadBalancerDeleted(context.TODO(), testClusterName, &svc)
 		if err != nil {
@@ -784,6 +816,10 @@ func TestReconcileLoadBalancerEditServiceSubnet(t *testing.T) {
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
 	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+	expectedPLS := make([]network.PrivateLinkService, 0)
+	mockPLSClient := az.PrivateLinkServiceClient.(*mockprivatelinkserviceclient.MockInterface)
+	mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
 	if err != nil {
@@ -985,6 +1021,10 @@ func TestReconcileLoadBalancerMultipleServices(t *testing.T) {
 	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
+	expectedPLS := make([]network.PrivateLinkService, 0)
+	mockPLSClient := az.PrivateLinkServiceClient.(*mockprivatelinkserviceclient.MockInterface)
+	mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
+
 	_, err := az.reconcileLoadBalancer(testClusterName, &svc1, clusterResources.nodes, true /* wantLb */)
 	if err != nil {
 		t.Errorf("Unexpected error: %q", err)
@@ -1097,6 +1137,10 @@ func TestServiceRespectsNoSessionAffinity(t *testing.T) {
 	mockPIPsClient.EXPECT().CreateOrUpdate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	mockPIPsClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, gomock.Any(), gomock.Any()).Return(expectedPIP, nil).AnyTimes()
 
+	expectedPLS := make([]network.PrivateLinkService, 0)
+	mockPLSClient := az.PrivateLinkServiceClient.(*mockprivatelinkserviceclient.MockInterface)
+	mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
+
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
 	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
@@ -1153,6 +1197,10 @@ func TestServiceRespectsClientIPSessionAffinity(t *testing.T) {
 	mockPIPsClient.EXPECT().CreateOrUpdate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	mockPIPsClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, gomock.Any(), gomock.Any()).Return(expectedPIP, nil).AnyTimes()
 
+	expectedPLS := make([]network.PrivateLinkService, 0)
+	mockPLSClient := az.PrivateLinkServiceClient.(*mockprivatelinkserviceclient.MockInterface)
+	mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
+
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
 	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
@@ -1189,7 +1237,7 @@ func TestReconcileSecurityGroupNewServiceAddsPort(t *testing.T) {
 	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc1, clusterResources.nodes, true)
-	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb)
+	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb, nil)
 
 	sg, err := az.reconcileSecurityGroup(testClusterName, &svc1, &lbStatus.Ingress[0].IP, true /* wantLb */)
 	if err != nil {
@@ -1218,7 +1266,7 @@ func TestReconcileSecurityGroupNewInternalServiceAddsPort(t *testing.T) {
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc1, clusterResources.nodes, true)
-	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb)
+	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb, nil)
 	sg, err := az.reconcileSecurityGroup(testClusterName, &svc1, &lbStatus.Ingress[0].IP, true /* wantLb */)
 	if err != nil {
 		t.Errorf("Unexpected error: %q", err)
@@ -1239,6 +1287,14 @@ func TestReconcileSecurityGroupRemoveService(t *testing.T) {
 
 	expectedLBs := make([]network.LoadBalancer, 0)
 	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, true)
+	mockLBClient := az.LoadBalancerClient.(*mockloadbalancerclient.MockInterface)
+	mockLBClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, "testCluster", gomock.Any()).Return(
+		getTestLoadBalancer(to.StringPtr(testClusterName),
+			to.StringPtr(az.ResourceGroup),
+			to.StringPtr(testClusterName),
+			to.StringPtr("aservice1"),
+			service1,
+			"Standard"), nil).AnyTimes()
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
 	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
@@ -1247,7 +1303,7 @@ func TestReconcileSecurityGroupRemoveService(t *testing.T) {
 	lb, _ := az.reconcileLoadBalancer(testClusterName, &service1, clusterResources.nodes, true)
 	_, _ = az.reconcileLoadBalancer(testClusterName, &service2, clusterResources.nodes, true)
 
-	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&service1, lb)
+	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&service1, lb, nil)
 
 	sg := getTestSecurityGroup(az, service1, service2)
 	validateSecurityGroup(t, sg, service1, service2)
@@ -1277,8 +1333,16 @@ func TestReconcileSecurityGroupRemoveServiceRemovesPort(t *testing.T) {
 	svcUpdated := getTestService("service1", v1.ProtocolTCP, nil, false, 80)
 	expectedLBs := make([]network.LoadBalancer, 0)
 	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, true)
+	mockLBClient := az.LoadBalancerClient.(*mockloadbalancerclient.MockInterface)
+	mockLBClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, "testCluster", gomock.Any()).Return(
+		getTestLoadBalancer(to.StringPtr(testClusterName),
+			to.StringPtr(az.ResourceGroup),
+			to.StringPtr(testClusterName),
+			to.StringPtr("aservice1"),
+			svc,
+			"Standard"), nil).AnyTimes()
 	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true)
-	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc, lb)
+	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc, lb, nil)
 
 	sg, err := az.reconcileSecurityGroup(testClusterName, &svcUpdated, &lbStatus.Ingress[0].IP, true /* wantLb */)
 	if err != nil {
@@ -1309,7 +1373,7 @@ func TestReconcileSecurityWithSourceRanges(t *testing.T) {
 	expectedLBs := make([]network.LoadBalancer, 0)
 	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, false)
 	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true)
-	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc, lb)
+	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc, lb, nil)
 
 	sg, err := az.reconcileSecurityGroup(testClusterName, &svc, &lbStatus.Ingress[0].IP, true /* wantLb */)
 	if err != nil {
@@ -1343,13 +1407,21 @@ func TestReconcileSecurityGroupEtagMismatch(t *testing.T) {
 
 	expectedLBs := make([]network.LoadBalancer, 0)
 	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, true)
+	mockLBClient := az.LoadBalancerClient.(*mockloadbalancerclient.MockInterface)
+	mockLBClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, "testCluster", gomock.Any()).Return(
+		getTestLoadBalancer(to.StringPtr(testClusterName),
+			to.StringPtr(az.ResourceGroup),
+			to.StringPtr(testClusterName),
+			to.StringPtr("aservice1"),
+			svc1,
+			"Standard"), nil).AnyTimes()
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
 	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc1, clusterResources.nodes, true)
-	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb)
+	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb, nil)
 
 	newSG, err := az.reconcileSecurityGroup(testClusterName, &svc1, &lbStatus.Ingress[0].IP, true /* wantLb */)
 	assert.Nil(t, newSG)
@@ -1616,8 +1688,14 @@ func getTestService(identifier string, proto v1.Protocol, annotations map[string
 }
 
 func getInternalTestService(identifier string, requestedPorts ...int32) v1.Service {
+	return getTestServiceWithAnnotation(identifier, map[string]string{consts.ServiceAnnotationLoadBalancerInternal: consts.TrueAnnotationValue}, requestedPorts...)
+}
+
+func getTestServiceWithAnnotation(identifier string, annotations map[string]string, requestedPorts ...int32) v1.Service {
 	svc := getTestService(identifier, v1.ProtocolTCP, nil, false, requestedPorts...)
-	svc.Annotations[consts.ServiceAnnotationLoadBalancerInternal] = consts.TrueAnnotationValue
+	for k, v := range annotations {
+		svc.Annotations[k] = v
+	}
 	return svc
 }
 
@@ -1726,6 +1804,7 @@ func validateLoadBalancer(t *testing.T, loadBalancer *network.LoadBalancer, serv
 			foundProbe := false
 			if servicehelpers.NeedsHealthCheck(&services[i]) {
 				path, port := servicehelpers.GetServiceHealthCheckPathPort(&services[i])
+				wantedRuleName := az.getLoadBalancerRuleName(&services[i], v1.ProtocolTCP, port)
 				for _, actualProbe := range *loadBalancer.Probes {
 					if strings.EqualFold(*actualProbe.Name, wantedRuleName) &&
 						*actualProbe.Port == port &&
@@ -2026,6 +2105,7 @@ func TestNewCloudFromJSON(t *testing.T) {
 		"resourceGroup": "--resource-group--",
 		"routeTableResourceGroup": "--route-table-resource-group--",
 		"securityGroupResourceGroup": "--security-group-resource-group--",
+		"privateLinkServiceResourceGroup": "--private-link-service-resource-group--",
 		"location": "--location--",
 		"subnetName": "--subnet-name--",
 		"securityGroupName": "--security-group-name--",
@@ -2043,6 +2123,8 @@ func TestNewCloudFromJSON(t *testing.T) {
 		"loadBalancerCacheTTLInSeconds": 100,
 		"nsgCacheTTLInSeconds": 100,
 		"routeTableCacheTTLInSeconds": 100,
+		"publicIPCacheTTLInSeconds": 100,
+		"plsCacheTTLInSeconds": 100,
 		"vmType": "vmss",
 		"disableAvailabilitySetNodes": true
 	}`
@@ -2081,6 +2163,7 @@ aadClientCertPassword: --aad-client-cert-password--
 resourceGroup: --resource-group--
 routeTableResourceGroup: --route-table-resource-group--
 securityGroupResourceGroup: --security-group-resource-group--
+privateLinkServiceResourceGroup: --private-link-service-resource-group--
 location: --location--
 subnetName: --subnet-name--
 securityGroupName: --security-group-name--
@@ -2102,6 +2185,8 @@ vmCacheTTLInSeconds: 100
 loadBalancerCacheTTLInSeconds: 100
 nsgCacheTTLInSeconds: 100
 routeTableCacheTTLInSeconds: 100
+publicIPCacheTTLInSeconds: 100
+plsCacheTTLInSeconds: 100
 vmType: vmss
 disableAvailabilitySetNodes: true
 `
@@ -2137,6 +2222,9 @@ func validateConfig(t *testing.T, config string) { //nolint
 	}
 	if azureCloud.SecurityGroupResourceGroup != "--security-group-resource-group--" {
 		t.Errorf("got incorrect value for SecurityGroupResourceGroup")
+	}
+	if azureCloud.PrivateLinkServiceResourceGroup != "--private-link-service-resource-group--" {
+		t.Errorf("got incorrect value for PrivateLinkResourceGroup")
 	}
 	if azureCloud.Location != "--location--" {
 		t.Errorf("got incorrect value for Location")
@@ -2200,6 +2288,12 @@ func validateConfig(t *testing.T, config string) { //nolint
 	}
 	if azureCloud.RouteTableCacheTTLInSeconds != 100 {
 		t.Errorf("got incorrect value for routeTableCacheTTLInSeconds")
+	}
+	if azureCloud.PublicIPCacheTTLInSeconds != 100 {
+		t.Errorf("got incorrect value for publicIPCacheTTLInSeconds")
+	}
+	if azureCloud.PlsCacheTTLInSeconds != 100 {
+		t.Errorf("got incorrect value for plsCacheTTLInSeconds")
 	}
 	if azureCloud.VMType != consts.VMTypeVMSS {
 		t.Errorf("got incorrect value for vmType")
@@ -3154,44 +3248,49 @@ func TestCanCombineSharedAndPrivateRulesInSameGroup(t *testing.T) {
 	}
 }
 
-func TestGetResourceGroupFromDiskURI(t *testing.T) {
+func TestGetInfoFromDiskURI(t *testing.T) {
 	tests := []struct {
 		diskURL        string
-		expectedResult string
+		expectedRG     string
+		expectedSubsID string
 		expectError    bool
 	}{
 		{
 			diskURL:        "/subscriptions/4be8920b-2978-43d7-axyz-04d8549c1d05/resourceGroups/azure-k8s1102/providers/Microsoft.Compute/disks/andy-mghyb1102-dynamic-pvc-f7f014c9-49f4-11e8-ab5c-000d3af7b38e",
-			expectedResult: "azure-k8s1102",
+			expectedRG:     "azure-k8s1102",
+			expectedSubsID: "4be8920b-2978-43d7-axyz-04d8549c1d05",
 			expectError:    false,
 		},
 		{
 			// case insensitive check
 			diskURL:        "/subscriptions/4be8920b-2978-43d7-axyz-04d8549c1d05/resourcegroups/azure-k8s1102/providers/Microsoft.Compute/disks/andy-mghyb1102-dynamic-pvc-f7f014c9-49f4-11e8-ab5c-000d3af7b38e",
-			expectedResult: "azure-k8s1102",
+			expectedRG:     "azure-k8s1102",
+			expectedSubsID: "4be8920b-2978-43d7-axyz-04d8549c1d05",
 			expectError:    false,
 		},
 		{
-			diskURL:        "/4be8920b-2978-43d7-axyz-04d8549c1d05/resourceGroups/azure-k8s1102/providers/Microsoft.Compute/disks/andy-mghyb1102-dynamic-pvc-f7f014c9-49f4-11e8-ab5c-000d3af7b38e",
-			expectedResult: "",
-			expectError:    true,
+			diskURL:     "/4be8920b-2978-43d7-axyz-04d8549c1d05/resourceGroups/azure-k8s1102/providers/Microsoft.Compute/disks/andy-mghyb1102-dynamic-pvc-f7f014c9-49f4-11e8-ab5c-000d3af7b38e",
+			expectedRG:  "",
+			expectError: true,
 		},
 		{
-			diskURL:        "",
-			expectedResult: "",
-			expectError:    true,
+			diskURL:     "",
+			expectedRG:  "",
+			expectError: true,
 		},
 	}
 
 	for _, test := range tests {
-		result, err := getResourceGroupFromDiskURI(test.diskURL)
-		assert.Equal(t, result, test.expectedResult, "Expect result not equal with getResourceGroupFromDiskURI(%s) return: %q, expected: %q",
-			test.diskURL, result, test.expectedResult)
+		rg, subsID, err := getInfoFromDiskURI(test.diskURL)
+		assert.Equal(t, rg, test.expectedRG, "Expect result not equal with getInfoFromDiskURI(%s) return: %q, expected: %q",
+			test.diskURL, rg, test.expectedRG)
+		assert.Equal(t, subsID, test.expectedSubsID, "Expect result not equal with getInfoFromDiskURI(%s) return: %q, expected: %q",
+			test.diskURL, subsID, test.expectedSubsID)
 
 		if test.expectError {
-			assert.NotNil(t, err, "Expect error during getResourceGroupFromDiskURI(%s)", test.diskURL)
+			assert.NotNil(t, err, "Expect error during getInfoFromDiskURI(%s)", test.diskURL)
 		} else {
-			assert.Nil(t, err, "Expect error is nil during getResourceGroupFromDiskURI(%s)", test.diskURL)
+			assert.Nil(t, err, "Expect error is nil during getInfoFromDiskURI(%s)", test.diskURL)
 		}
 	}
 }
@@ -3312,7 +3411,7 @@ func TestUpdateNodeCaches(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	az := GetTestCloud(ctrl)
-
+	// delete node appearing in unmanagedNodes and excludeLoadBalancerNodes
 	zone := fmt.Sprintf("%s-0", az.Location)
 	nodesInZone := sets.NewString("prevNode")
 	az.nodeZones = map[string]sets.String{zone: nodesInZone}
@@ -3336,9 +3435,10 @@ func TestUpdateNodeCaches(t *testing.T) {
 	assert.Equal(t, 0, len(az.nodeZones[zone]))
 	assert.Equal(t, 0, len(az.nodeResourceGroups))
 	assert.Equal(t, 0, len(az.unmanagedNodes))
-	assert.Equal(t, 0, len(az.excludeLoadBalancerNodes))
+	assert.Equal(t, 1, len(az.excludeLoadBalancerNodes))
 	assert.Equal(t, 0, len(az.nodeNames))
 
+	// add new (unmanaged and to-be-excluded) node
 	newNode := v1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Labels: map[string]string{
@@ -3355,8 +3455,89 @@ func TestUpdateNodeCaches(t *testing.T) {
 	assert.Equal(t, 1, len(az.nodeZones[zone]))
 	assert.Equal(t, 1, len(az.nodeResourceGroups))
 	assert.Equal(t, 1, len(az.unmanagedNodes))
-	assert.Equal(t, 1, len(az.excludeLoadBalancerNodes))
+	assert.Equal(t, 2, len(az.excludeLoadBalancerNodes))
 	assert.Equal(t, 1, len(az.nodeNames))
+}
+
+func TestUpdateNodeCacheExcludeLoadBalancer(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	az := GetTestCloud(ctrl)
+
+	zone := fmt.Sprintf("%s-0", az.Location)
+	nodesInZone := sets.NewString("aNode")
+	az.nodeZones = map[string]sets.String{zone: nodesInZone}
+	az.nodeResourceGroups = map[string]string{"aNode": "rg"}
+
+	// a non-ready node should be excluded
+	az.unmanagedNodes = sets.NewString()
+	az.excludeLoadBalancerNodes = sets.NewString()
+	az.nodeNames = sets.NewString()
+	nonReadyNode := v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				v1.LabelTopologyZone: zone,
+			},
+			Name: "aNode",
+		},
+		Status: v1.NodeStatus{
+			Conditions: []v1.NodeCondition{
+				{
+					Type:   v1.NodeReady,
+					Status: v1.ConditionFalse,
+				},
+			},
+		},
+	}
+	az.updateNodeCaches(nil, &nonReadyNode)
+	assert.Equal(t, 1, len(az.excludeLoadBalancerNodes))
+
+	// node becomes ready, it should be removed from az.excludeLoadBalancerNodes
+	readyNode := v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				v1.LabelTopologyZone: zone,
+			},
+			Name: "aNode",
+		},
+		Status: v1.NodeStatus{
+			Conditions: []v1.NodeCondition{
+				{
+					Type:   v1.NodeReady,
+					Status: v1.ConditionTrue,
+				},
+			},
+		},
+	}
+	az.updateNodeCaches(&nonReadyNode, &readyNode)
+	assert.Equal(t, 0, len(az.excludeLoadBalancerNodes))
+
+	// new non-ready node with taint is added to the cluster: don't exclude it
+	nonReadyTaintedNode := v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				v1.LabelTopologyZone: zone,
+			},
+			Name: "anotherNode",
+		},
+		Spec: v1.NodeSpec{
+			Taints: []v1.Taint{{
+				Key:    cloudproviderapi.TaintExternalCloudProvider,
+				Value:  "aValue",
+				Effect: v1.TaintEffectNoSchedule},
+			},
+		},
+		Status: v1.NodeStatus{
+			Conditions: []v1.NodeCondition{
+				{
+					Type:   v1.NodeReady,
+					Status: v1.ConditionFalse,
+				},
+			},
+		},
+	}
+	az.updateNodeCaches(nil, &nonReadyTaintedNode)
+	assert.Equal(t, 0, len(az.excludeLoadBalancerNodes))
 }
 
 func TestGetActiveZones(t *testing.T) {

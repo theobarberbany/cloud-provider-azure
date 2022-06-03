@@ -20,7 +20,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2021-07-01/compute"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -99,11 +99,11 @@ func TestVMSSVMCache(t *testing.T) {
 	for i := range expectedVMs {
 		vm := expectedVMs[i]
 		vmName := to.String(vm.OsProfile.ComputerName)
-		ssName, instanceID, realVM, err := ss.getVmssVM(vmName, azcache.CacheReadTypeDefault)
+		realVM, err := ss.getVmssVM(vmName, azcache.CacheReadTypeDefault)
 		assert.NoError(t, err)
-		assert.Equal(t, "vmss", ssName)
-		assert.Equal(t, to.String(vm.InstanceID), instanceID)
-		assert.Equal(t, &vm, realVM)
+		assert.Equal(t, "vmss", realVM.VMSSName)
+		assert.Equal(t, to.String(vm.InstanceID), realVM.InstanceID)
+		assert.Equal(t, &vm, realVM.AsVirtualMachineScaleSetVM())
 	}
 
 	// validate deleteCacheForNode().
@@ -122,11 +122,11 @@ func TestVMSSVMCache(t *testing.T) {
 	assert.Equal(t, false, ok)
 
 	// the VM should be back after another cache refresh.
-	ssName, instanceID, realVM, err := ss.getVmssVM(vmName, azcache.CacheReadTypeDefault)
+	realVM, err := ss.getVmssVM(vmName, azcache.CacheReadTypeDefault)
 	assert.NoError(t, err)
-	assert.Equal(t, "vmss", ssName)
-	assert.Equal(t, to.String(vm.InstanceID), instanceID)
-	assert.Equal(t, &vm, realVM)
+	assert.Equal(t, "vmss", realVM.VMSSName)
+	assert.Equal(t, to.String(vm.InstanceID), realVM.InstanceID)
+	assert.Equal(t, &vm, realVM.AsVirtualMachineScaleSetVM())
 }
 
 func TestVMSSVMCacheWithDeletingNodes(t *testing.T) {
@@ -156,10 +156,8 @@ func TestVMSSVMCacheWithDeletingNodes(t *testing.T) {
 		vmName := to.String(vm.OsProfile.ComputerName)
 		assert.Equal(t, vm.ProvisioningState, to.StringPtr(string(compute.ProvisioningStateDeleting)))
 
-		ssName, instanceID, realVM, err := ss.getVmssVM(vmName, azcache.CacheReadTypeDefault)
+		realVM, err := ss.getVmssVM(vmName, azcache.CacheReadTypeDefault)
 		assert.Nil(t, realVM)
-		assert.Equal(t, "", ssName)
-		assert.Equal(t, instanceID, ssName)
 		assert.Equal(t, cloudprovider.InstanceNotFound, err)
 	}
 }

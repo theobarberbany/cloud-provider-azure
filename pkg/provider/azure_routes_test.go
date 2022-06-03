@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -307,13 +307,6 @@ func TestCreateRoute(t *testing.T) {
 			unmanagedNodeName:  "node",
 			routeCIDRs:         map[string]string{},
 			expectedRouteCIDRs: map[string]string{"node": "1.2.3.4/24"},
-		},
-		{
-			name:                 "CreateRoute should report error if node is unmanaged and cloud.ipv6DualStackEnabled is true",
-			hasUnmanagedNodes:    true,
-			ipv6DualStackEnabled: true,
-			unmanagedNodeName:    "node",
-			expectedErrMsg:       fmt.Errorf("unmanaged nodes are not supported in dual stack mode"),
 		},
 		{
 			name:           "CreateRoute should create route if cloud.ipv6DualStackEnabled is true and route doesn't exist",

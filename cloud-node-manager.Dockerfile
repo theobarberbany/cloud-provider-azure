@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.1-experimental
+# syntax=docker/dockerfile:1.3.1
 
 # Copyright 2019 The Kubernetes Authors.
 #
@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM --platform=linux/amd64 golang:1.17-buster AS builder
+FROM --platform=linux/amd64 golang:1.18.2-buster AS builder
 
 ARG ENABLE_GIT_COMMAND=true
 ARG ARCH=amd64

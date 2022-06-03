@@ -23,8 +23,8 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2020-12-01/compute"
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-02-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2021-07-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -36,7 +36,6 @@ import (
 	cloudprovider "k8s.io/cloud-provider"
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/interfaceclient/mockinterfaceclient"
-	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/publicipclient/mockpublicipclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmasclient/mockvmasclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/vmclient/mockvmclient"
 	azcache "sigs.k8s.io/cloud-provider-azure/pkg/cache"
@@ -459,6 +458,13 @@ func TestGetFrontendIPConfigName(t *testing.T) {
 			expected:      "a257b965551374ad2b091ef3f07043ad-shortsubnet",
 		},
 		{
+			description:   "internal lb should have subnet name on the frontend ip configuration name but truncated to 80 characters, also not end with char like '-'",
+			subnetName:    "a--------------------------------------------------z",
+			isInternal:    true,
+			useStandardLB: true,
+			expected:      "a257b965551374ad2b091ef3f07043ad-a---------------------------------------------_",
+		},
+		{
 			description:   "internal standard lb should have subnet name on the frontend ip configuration name but truncated to 80 characters",
 			subnetName:    "averylonnnngggnnnnnnnnnnnnnnnnnnnnnngggggggggggggggggggggggggggggggggggggsubet",
 			isInternal:    true,
@@ -489,16 +495,18 @@ func TestGetFrontendIPConfigName(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		if c.useStandardLB {
-			az.Config.LoadBalancerSku = consts.LoadBalancerSkuStandard
-		} else {
-			az.Config.LoadBalancerSku = consts.LoadBalancerSkuBasic
-		}
-		svc.Annotations[consts.ServiceAnnotationLoadBalancerInternalSubnet] = c.subnetName
-		svc.Annotations[consts.ServiceAnnotationLoadBalancerInternal] = strconv.FormatBool(c.isInternal)
+		t.Run(c.description, func(t *testing.T) {
+			if c.useStandardLB {
+				az.Config.LoadBalancerSku = consts.LoadBalancerSkuStandard
+			} else {
+				az.Config.LoadBalancerSku = consts.LoadBalancerSkuBasic
+			}
+			svc.Annotations[consts.ServiceAnnotationLoadBalancerInternalSubnet] = c.subnetName
+			svc.Annotations[consts.ServiceAnnotationLoadBalancerInternal] = strconv.FormatBool(c.isInternal)
 
-		ipconfigName := az.getDefaultFrontendIPConfigName(svc)
-		assert.Equal(t, c.expected, ipconfigName, c.description)
+			ipconfigName := az.getDefaultFrontendIPConfigName(svc)
+			assert.Equal(t, c.expected, ipconfigName, c)
+		})
 	}
 }
 
@@ -1778,11 +1786,7 @@ func TestServiceOwnsFrontendIP(t *testing.T) {
 	}
 
 	for _, test := range testCases {
-		mockPIPClient := mockpublicipclient.NewMockInterface(ctrl)
-		cloud.PublicIPAddressesClient = mockPIPClient
-		mockPIPClient.EXPECT().List(gomock.Any(), gomock.Any()).Return(test.existingPIPs, nil).MaxTimes(1)
-
-		isOwned, isPrimary, err := cloud.serviceOwnsFrontendIP(test.fip, test.service)
+		isOwned, isPrimary, err := cloud.serviceOwnsFrontendIP(test.fip, test.service, &test.existingPIPs)
 		assert.Equal(t, test.expectedErr, err, test.desc)
 		assert.Equal(t, test.isOwned, isOwned, test.desc)
 		assert.Equal(t, test.isPrimary, isPrimary, test.desc)

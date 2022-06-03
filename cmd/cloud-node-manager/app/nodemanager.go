@@ -29,6 +29,7 @@ import (
 	"k8s.io/apiserver/pkg/server/healthz"
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/cli/globalflag"
+	"k8s.io/component-base/config"
 	"k8s.io/component-base/term"
 	genericcontrollermanager "k8s.io/controller-manager/app"
 	controllerhealthz "k8s.io/controller-manager/pkg/healthz"
@@ -107,15 +108,15 @@ func Run(c *cloudnodeconfig.Config, stopCh <-chan struct{}) error {
 	var checks []healthz.HealthChecker
 	healthzHandler := controllerhealthz.NewMutableHealthzHandler(checks...)
 	if c.SecureServing != nil {
-		unsecuredMux := genericcontrollermanager.NewBaseHandler(nil, healthzHandler)
+		unsecuredMux := genericcontrollermanager.NewBaseHandler(&config.DebuggingConfiguration{}, healthzHandler)
 		handler := genericcontrollermanager.BuildHandlerChain(unsecuredMux, &c.Authorization, &c.Authentication)
 		// TODO: handle stoppedCh returned by c.SecureServing.Serve
-		if _, err := c.SecureServing.Serve(handler, 0, stopCh); err != nil {
+		if _, _, err := c.SecureServing.Serve(handler, 0, stopCh); err != nil {
 			return err
 		}
 	}
 	if c.InsecureServing != nil {
-		unsecuredMux := genericcontrollermanager.NewBaseHandler(nil, healthzHandler)
+		unsecuredMux := genericcontrollermanager.NewBaseHandler(&config.DebuggingConfiguration{}, healthzHandler)
 		insecureSuperuserAuthn := server.AuthenticationInfo{Authenticator: &server.InsecureSuperuser{}}
 		handler := genericcontrollermanager.BuildHandlerChain(unsecuredMux, nil, &insecureSuperuserAuthn)
 		if err := c.InsecureServing.Serve(handler, 0, stopCh); err != nil {
@@ -124,7 +125,7 @@ func Run(c *cloudnodeconfig.Config, stopCh <-chan struct{}) error {
 	}
 
 	run := func(ctx context.Context) {
-		if err := startControllers(c, ctx.Done()); err != nil {
+		if err := startControllers(c, ctx.Done(), healthzHandler); err != nil {
 			klog.Fatalf("error running controllers: %v", err)
 		}
 	}
@@ -134,7 +135,7 @@ func Run(c *cloudnodeconfig.Config, stopCh <-chan struct{}) error {
 }
 
 // startControllers starts the cloud specific controller loops.
-func startControllers(c *cloudnodeconfig.Config, stopCh <-chan struct{}) error {
+func startControllers(c *cloudnodeconfig.Config, stopCh <-chan struct{}, healthzHandler *controllerhealthz.MutableHealthzHandler) error {
 	klog.V(1).Infof("Starting cloud-node-manager...")
 
 	// Start the CloudNodeController
@@ -148,6 +149,9 @@ func startControllers(c *cloudnodeconfig.Config, stopCh <-chan struct{}) error {
 		c.WaitForRoutes)
 
 	go nodeController.Run(stopCh)
+
+	check := controllerhealthz.NamedPingChecker(c.NodeName)
+	healthzHandler.AddHealthChecker(check)
 
 	klog.Infof("Started cloud-node-manager")
 
