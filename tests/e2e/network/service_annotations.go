@@ -60,6 +60,7 @@ const (
 var _ = Describe("Service with annotation", func() {
 	basename := "service"
 	serviceName := "annotation-test"
+	initSuccess := false
 
 	var (
 		cs clientset.Interface
@@ -95,9 +96,29 @@ var _ = Describe("Service with annotation", func() {
 		utils.Logf("Creating Azure clients")
 		tc, err = utils.CreateAzureTestClient()
 		Expect(err).NotTo(HaveOccurred())
+
+		initSuccess = true
 	})
 
 	AfterEach(func() {
+		if !initSuccess {
+			// Get non-running Pods' describe info
+			pods := []v1.Pod{}
+			testPods, err := utils.GetPodList(cs, ns.Name)
+			Expect(err).NotTo(HaveOccurred())
+			pods = append(pods, testPods.Items...)
+			ksPods, err := utils.GetPodList(cs, "kube-system")
+			Expect(err).NotTo(HaveOccurred())
+			pods = append(pods, ksPods.Items...)
+			for _, pod := range pods {
+				if pod.Status.Phase != v1.PodRunning {
+					output, err := utils.RunKubectl(ns.Name, "describe", "pod", pod.Name)
+					Expect(err).NotTo(HaveOccurred())
+					utils.Logf("Describe info of Pod %q:\n%s", pod.Name, output)
+				}
+			}
+		}
+
 		err := cs.AppsV1().Deployments(ns.Name).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
 		Expect(err).NotTo(HaveOccurred())
 
@@ -379,25 +400,34 @@ var _ = Describe("Service with annotation", func() {
 
 	It("should support service annotation `service.beta.kubernetes.io/azure-pip-name`", func() {
 		By("Creating two test pips")
-		pip1, err := utils.WaitCreatePIP(tc, "pip1", tc.GetResourceGroup(), defaultPublicIPAddress("pip1"))
+		pipName1 := "pip1"
+		pip1, err := utils.WaitCreatePIP(tc, pipName1, tc.GetResourceGroup(), defaultPublicIPAddress(pipName1))
+		defer func() {
+			By("Cleaning up test PIP")
+			err := utils.DeletePIPWithRetry(tc, pipName1, tc.GetResourceGroup())
+			Expect(err).NotTo(HaveOccurred())
+		}()
 		Expect(err).NotTo(HaveOccurred())
-		pip2, err := utils.WaitCreatePIP(tc, "pip2", tc.GetResourceGroup(), defaultPublicIPAddress("pip2"))
+		pipName2 := "pip2"
+		pip2, err := utils.WaitCreatePIP(tc, pipName2, tc.GetResourceGroup(), defaultPublicIPAddress(pipName2))
+		defer func() {
+			By("Cleaning up test PIP")
+			err := utils.DeletePIPWithRetry(tc, pipName2, tc.GetResourceGroup())
+			Expect(err).NotTo(HaveOccurred())
+		}()
 		Expect(err).NotTo(HaveOccurred())
 
+		By("Creating a service referring to the first pip")
+		annotation := map[string]string{
+			consts.ServiceAnnotationPIPName: pipName1,
+		}
+		service := utils.CreateLoadBalancerServiceManifest(serviceName, annotation, labels, ns.Name, ports)
+		_, err = cs.CoreV1().Services(ns.Name).Create(context.TODO(), service, metav1.CreateOptions{})
 		defer func() {
 			By("Cleaning up test service")
 			err := utils.DeleteServiceIfExists(cs, ns.Name, serviceName)
 			Expect(err).NotTo(HaveOccurred())
-			By("Cleaning up test PIPs")
-
 		}()
-
-		By("Creating a service referring to the first pip")
-		annotation := map[string]string{
-			consts.ServiceAnnotationPIPName: "pip1",
-		}
-		service := utils.CreateLoadBalancerServiceManifest(serviceName, annotation, labels, ns.Name, ports)
-		_, err = cs.CoreV1().Services(ns.Name).Create(context.TODO(), service, metav1.CreateOptions{})
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Waiting for the service to expose")
@@ -408,13 +438,87 @@ var _ = Describe("Service with annotation", func() {
 		By("Updating the service to refer to the second service")
 		service, err = cs.CoreV1().Services(ns.Name).Get(context.TODO(), serviceName, metav1.GetOptions{})
 		Expect(err).NotTo(HaveOccurred())
-		service.Annotations[consts.ServiceAnnotationPIPName] = "pip2"
+		service.Annotations[consts.ServiceAnnotationPIPName] = pipName2
 		_, err = cs.CoreV1().Services(ns.Name).Update(context.TODO(), service, metav1.UpdateOptions{})
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Waiting for service IP to be updated")
 		_, err = utils.WaitServiceExposureAndValidateConnectivity(cs, ns.Name, serviceName, to.String(pip2.IPAddress))
 		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("should support service annotation `service.beta.kubernetes.io/azure-pip-prefix-id`", func() {
+		const (
+			prefix1Name = "prefix1"
+			prefix2Name = "prefix2"
+		)
+
+		By("Creating two test PIPPrefix")
+		prefix1, err := utils.WaitCreatePIPPrefix(tc, prefix1Name, tc.GetResourceGroup(), defaultPublicIPPrefix(prefix1Name))
+		Expect(err).NotTo(HaveOccurred())
+		defer func() {
+			By(fmt.Sprintf("Cleaning up pip-prefix: %s", prefix1Name))
+			Expect(utils.DeletePIPPrefixWithRetry(tc, prefix1Name)).NotTo(HaveOccurred())
+		}()
+
+		prefix2, err := utils.WaitCreatePIPPrefix(tc, prefix2Name, tc.GetResourceGroup(), defaultPublicIPPrefix(prefix2Name))
+		Expect(err).NotTo(HaveOccurred())
+		defer func() {
+			By(fmt.Sprintf("Cleaning up pip-prefix: %s", prefix2Name))
+			Expect(utils.DeletePIPPrefixWithRetry(tc, prefix2Name)).NotTo(HaveOccurred())
+		}()
+
+		By("Creating a service referring to the prefix")
+		{
+			annotation := map[string]string{
+				consts.ServiceAnnotationPIPPrefixID: to.String(prefix1.ID),
+			}
+			service := utils.CreateLoadBalancerServiceManifest(serviceName, annotation, labels, ns.Name, ports)
+			_, err = cs.CoreV1().Services(ns.Name).Create(context.TODO(), service, metav1.CreateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		defer func() {
+			By("Cleaning up test service")
+			Expect(utils.DeleteServiceIfExists(cs, ns.Name, serviceName)).NotTo(HaveOccurred())
+		}()
+
+		By("Waiting for the service to expose")
+		{
+			ip, err := utils.WaitServiceExposureAndValidateConnectivity(cs, ns.Name, serviceName, "")
+			Expect(err).NotTo(HaveOccurred())
+
+			pip, err := utils.WaitGetPIPByPrefix(tc, prefix1Name, true)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(pip.IPAddress).NotTo(BeNil())
+			Expect(pip.PublicIPPrefix.ID).To(Equal(prefix1.ID))
+			Expect(ip).To(Equal(to.String(pip.IPAddress)))
+		}
+
+		By("Updating the service to refer to the second prefix")
+		{
+			service, err := cs.CoreV1().Services(ns.Name).Get(context.TODO(), serviceName, metav1.GetOptions{})
+			Expect(err).NotTo(HaveOccurred())
+			service.Annotations[consts.ServiceAnnotationPIPPrefixID] = to.String(prefix2.ID)
+			_, err = cs.CoreV1().Services(ns.Name).Update(context.TODO(), service, metav1.UpdateOptions{})
+			Expect(err).NotTo(HaveOccurred())
+		}
+
+		By("Waiting for service IP to be updated")
+		{
+			var pip network.PublicIPAddress
+
+			// wait until ip created by prefix
+			pip, err := utils.WaitGetPIPByPrefix(tc, prefix2Name, true)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(pip.IPAddress).NotTo(BeNil())
+			Expect(pip.PublicIPPrefix.ID).To(Equal(prefix2.ID))
+
+			_, err = utils.WaitServiceExposureAndValidateConnectivity(cs, ns.Name, serviceName, to.String(pip.IPAddress))
+			Expect(err).NotTo(HaveOccurred())
+		}
 	})
 
 	It("should support service annotation 'service.beta.kubernetes.io/azure-load-balancer-health-probe-num-of-probe' and port specific configs", func() {
@@ -571,6 +675,7 @@ var _ = Describe("[[Multi-Nodepool]][VMSS]", func() {
 var _ = Describe("Multi-ports service", func() {
 	basename := "mpservice"
 	serviceName := "multiport-test"
+	initSuccess := false
 
 	var (
 		cs clientset.Interface
@@ -615,9 +720,28 @@ var _ = Describe("Multi-ports service", func() {
 		tc, err = utils.CreateAzureTestClient()
 		Expect(err).NotTo(HaveOccurred())
 
+		initSuccess = true
 	})
 
 	AfterEach(func() {
+		if !initSuccess {
+			// Get non-running Pods' describe info
+			pods := []v1.Pod{}
+			testPods, err := utils.GetPodList(cs, ns.Name)
+			Expect(err).NotTo(HaveOccurred())
+			pods = append(pods, testPods.Items...)
+			ksPods, err := utils.GetPodList(cs, "kube-system")
+			Expect(err).NotTo(HaveOccurred())
+			pods = append(pods, ksPods.Items...)
+			for _, pod := range pods {
+				if pod.Status.Phase != v1.PodRunning {
+					output, err := utils.RunKubectl(ns.Name, "describe", "pod", pod.Name)
+					Expect(err).NotTo(HaveOccurred())
+					utils.Logf("Describe info of Pod %q:\n%s", pod.Name, output)
+				}
+			}
+		}
+
 		err := cs.AppsV1().Deployments(ns.Name).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
 		Expect(err).NotTo(HaveOccurred())
 
