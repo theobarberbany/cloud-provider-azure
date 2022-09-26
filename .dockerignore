@@ -6,7 +6,3 @@ helm/
 
 /cloudbuild.yaml
 /netlify.toml
-
-# Ignore non openshift-specific dockerfiles at the project root
-/Dockerfile*
-/*.Dockerfile
