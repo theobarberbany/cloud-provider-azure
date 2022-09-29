@@ -19,7 +19,7 @@ package armclient
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -30,6 +30,7 @@ import (
 
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure"
+	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/stretchr/testify/assert"
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
@@ -73,40 +74,63 @@ func TestSend(t *testing.T) {
 	assert.Equal(t, 2, count)
 	assert.Equal(t, http.StatusOK, response.StatusCode)
 }
-func TestSendFailureRegionalRetry(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "GET", r.Method)
-		w.WriteHeader(http.StatusOK)
-		_, err := w.Write([]byte("{}"))
-		assert.NoError(t, err)
-	}))
-	globalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "{\"error\":{\"code\":\"ResourceGroupNotFound\"}}", http.StatusInternalServerError)
-	}))
-
-	azConfig := azureclients.ClientConfig{Backoff: &retry.Backoff{Steps: 3}, UserAgent: "test", Location: "eastus"}
-	armClient := New(nil, azConfig, server.URL, "2019-01-01")
-	targetURL, _ := url.Parse(server.URL)
-	armClient.regionalEndpoint = targetURL.Host
-	pathParameters := map[string]interface{}{
-		"resourceGroupName": autorest.Encode("path", "testgroup"),
-		"subscriptionId":    autorest.Encode("path", "testid"),
-		"resourceName":      autorest.Encode("path", "testname"),
+func TestDoHackRegionalRetryForGET(t *testing.T) {
+	testcases := []struct {
+		description               string
+		globalServerErrMsg        string
+		globalServerCode          int
+		globalServerContentLength *string
+	}{
+		{
+			"RegionalRetry",
+			"{\"error\":{\"code\":\"ResourceGroupNotFound\"}}",
+			http.StatusInternalServerError,
+			to.StringPtr("100"),
+		},
+		{
+			"ReplicationLatency-Content-Length-0",
+			"{}",
+			http.StatusOK,
+			to.StringPtr("0"),
+		},
+		{
+			"ReplicationLatency-Content-Length-minus-1",
+			"{}",
+			http.StatusOK,
+			to.StringPtr("-1"),
+		},
 	}
 
-	decorators := []autorest.PrepareDecorator{
-		autorest.WithPathParameters(
-			"/subscriptions/{subscriptionId}/resourceGroups/{resourceGroupName}/providers/Microsoft.Network/vNets/{resourceName}", pathParameters),
-		autorest.WithBaseURL(globalServer.URL),
+	for _, tc := range testcases {
+		t.Run(tc.description, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "GET", r.Method)
+				w.WriteHeader(http.StatusOK)
+				_, err := w.Write([]byte("{\"a\": \"b\"}"))
+				assert.NoError(t, err)
+			}))
+
+			globalServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.globalServerContentLength != nil {
+					w.Header().Set("Content-Length", *tc.globalServerContentLength)
+				}
+				http.Error(w, tc.globalServerErrMsg, tc.globalServerCode)
+			}))
+			azConfig := azureclients.ClientConfig{Backoff: &retry.Backoff{Steps: 3}, UserAgent: "test", Location: "eastus"}
+			armClient := New(nil, azConfig, server.URL, "2019-01-01")
+			targetURL, _ := url.Parse(server.URL)
+			armClient.regionalEndpoint = targetURL.Host
+			armClient.baseURI = globalServer.URL
+
+			resourceID := "/subscriptions/testid/resourceGroups/restgroup/providers/Microsoft.Network/vNets/testname"
+			ctx := context.Background()
+			response, rerr := armClient.GetResource(ctx, resourceID)
+			assert.Nil(t, rerr)
+			assert.NotNil(t, response)
+			assert.Equal(t, http.StatusOK, response.StatusCode)
+			assert.Equal(t, targetURL.Host, response.Request.URL.Host)
+		})
 	}
-
-	ctx := context.Background()
-	request, err := armClient.PrepareGetRequest(ctx, decorators...)
-	assert.NoError(t, err)
-
-	response, rerr := armClient.Send(ctx, request)
-	assert.Nil(t, rerr)
-	assert.Equal(t, http.StatusOK, response.StatusCode)
 }
 
 func TestSendFailure(t *testing.T) {
@@ -316,6 +340,19 @@ func TestGetResource(t *testing.T) {
 				return armClient.GetResourceWithExpandAPIVersionQuery(ctx, testResourceID, "", apiVersion)
 			},
 		},
+		{
+			description:         "GetResourceWithQueries",
+			expectedURIResource: "/subscriptions/subscription/resourceGroups/rg/providers/Microsoft.Network/publicIPAddresses/testPIP?api-version=2019-01-01&param1=value1&param2=value2",
+			apiVersion:          "2019-01-01",
+			expectedAPIVersion:  "2019-01-01",
+			params: map[string]interface{}{
+				"param1": "value1",
+				"param2": "value2",
+			},
+			getResource: func(ctx context.Context, armClient *Client, apiVersion string, params map[string]interface{}) (*http.Response, *retry.Error) {
+				return armClient.GetResourceWithQueries(ctx, testResourceID, params)
+			},
+		},
 	}
 
 	for _, tc := range testcases {
@@ -337,7 +374,7 @@ func TestGetResource(t *testing.T) {
 			response, rerr := tc.getResource(ctx, armClient, tc.expectedAPIVersion, tc.params)
 			assert.Nil(t, rerr)
 			assert.NotNil(t, response)
-			byteResponseBody, _ := ioutil.ReadAll(response.Body)
+			byteResponseBody, _ := io.ReadAll(response.Body)
 			stringResponseBody := string(byteResponseBody)
 			assert.Equal(t, "{data: testPIP}", stringResponseBody)
 			assert.Equal(t, 1, count)

@@ -18,9 +18,12 @@ package armclient
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"html"
+	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"sync"
@@ -31,11 +34,26 @@ import (
 
 	"github.com/Azure/go-autorest/autorest"
 	"github.com/Azure/go-autorest/autorest/azure"
+	"github.com/Azure/go-autorest/tracing"
 
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
 	"sigs.k8s.io/cloud-provider-azure/pkg/version"
 )
+
+// there is one sender per TLS renegotiation type, i.e. count of tls.RenegotiationSupport enums
+
+type defaultSender struct {
+	sender autorest.Sender
+	init   *sync.Once
+}
+
+// each type of sender will be created on demand in sender()
+var defaultSenders defaultSender
+
+func init() {
+	defaultSenders.init = &sync.Once{}
+}
 
 var _ Interface = &Client{}
 
@@ -47,10 +65,43 @@ type Client struct {
 	regionalEndpoint string
 }
 
+func sender() autorest.Sender {
+	// note that we can't init defaultSenders in init() since it will
+	// execute before calling code has had a chance to enable tracing
+	defaultSenders.init.Do(func() {
+		// copied from http.DefaultTransport with a TLS minimum version.
+		transport := &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   30 * time.Second, // the same as default transport
+				KeepAlive: 30 * time.Second, // the same as default transport
+			}).DialContext,
+			ForceAttemptHTTP2:     true,             // always attempt HTTP/2 even though custom dialer is provided
+			MaxIdleConns:          100,              // Zero means no limit, the same as default transport
+			MaxIdleConnsPerHost:   100,              // Default is 2, ref:https://cs.opensource.google/go/go/+/go1.18.4:src/net/http/transport.go;l=58
+			IdleConnTimeout:       90 * time.Second, // the same as default transport
+			TLSHandshakeTimeout:   10 * time.Second, // the same as default transport
+			ExpectContinueTimeout: 1 * time.Second,  // the same as default transport
+			TLSClientConfig: &tls.Config{
+				MinVersion:    tls.VersionTLS12,     //force to use TLS 1.2
+				Renegotiation: tls.RenegotiateNever, // the same as default transport https://pkg.go.dev/crypto/tls#RenegotiationSupport
+			},
+		}
+		var roundTripper http.RoundTripper = transport
+		if tracing.IsEnabled() {
+			roundTripper = tracing.NewTransport(transport)
+		}
+		j, _ := cookiejar.New(nil)
+		defaultSenders.sender = &http.Client{Jar: j, Transport: roundTripper}
+	})
+	return defaultSenders.sender
+}
+
 // New creates a ARM client
 func New(authorizer autorest.Authorizer, clientConfig azureclients.ClientConfig, baseURI, apiVersion string, sendDecoraters ...autorest.SendDecorator) *Client {
 	restClient := autorest.NewClientWithUserAgent(clientConfig.UserAgent)
 	restClient.Authorizer = authorizer
+	restClient.Sender = sender()
 
 	if clientConfig.UserAgent == "" {
 		restClient.UserAgent = GetUserAgent(restClient)
@@ -94,7 +145,6 @@ func New(authorizer autorest.Authorizer, clientConfig azureclients.ClientConfig,
 	client.client.Sender = autorest.DecorateSender(client.client,
 		autorest.DoCloseIfError(),
 		retry.DoExponentialBackoffRetry(backoff),
-		DoHackRegionalRetryDecorator(client),
 		DoDumpRequest(10),
 	)
 
@@ -263,9 +313,6 @@ func (c *Client) GetResourceWithExpandQuery(ctx context.Context, resourceID, exp
 // GetResourceWithExpandAPIVersionQuery get a resource by resource ID with expand and API version.
 func (c *Client) GetResourceWithExpandAPIVersionQuery(ctx context.Context, resourceID, expand, apiVersion string) (*http.Response, *retry.Error) {
 	decorators := []autorest.PrepareDecorator{
-		autorest.AsGet(),
-		autorest.WithBaseURL(c.baseURI),
-		autorest.WithPathParameters("{resourceID}", map[string]interface{}{"resourceID": resourceID}),
 		withAPIVersion(apiVersion),
 	}
 	if expand != "" {
@@ -274,15 +321,22 @@ func (c *Client) GetResourceWithExpandAPIVersionQuery(ctx context.Context, resou
 		}))
 	}
 
-	preparer := autorest.CreatePreparer(decorators...)
-	request, err := preparer.Prepare((&http.Request{}).WithContext(ctx))
+	return c.GetResource(ctx, resourceID, decorators...)
+}
 
-	if err != nil {
-		klog.V(5).Infof("Received error in %s: resourceID: %s, error: %s", "get.prepare", resourceID, err)
-		return nil, retry.NewError(false, err)
+// GetResourceWithQueries get a resource by resource ID with queries.
+func (c *Client) GetResourceWithQueries(ctx context.Context, resourceID string, queries map[string]interface{}) (*http.Response, *retry.Error) {
+
+	queryParameters := make(map[string]interface{})
+	for queryKey, queryValue := range queries {
+		queryParameters[queryKey] = autorest.Encode("query", queryValue)
 	}
 
-	return c.Send(ctx, request)
+	decorators := []autorest.PrepareDecorator{
+		autorest.WithQueryParameters(queryParameters),
+	}
+
+	return c.GetResource(ctx, resourceID, decorators...)
 }
 
 // GetResourceWithDecorators get a resource with decorators by resource ID
@@ -296,7 +350,7 @@ func (c *Client) GetResource(ctx context.Context, resourceID string, decorators 
 		return nil, retry.NewError(false, err)
 	}
 
-	return c.Send(ctx, request)
+	return c.Send(ctx, request, DoHackRegionalRetryForGET(c))
 }
 
 // PutResource puts a resource by resource ID

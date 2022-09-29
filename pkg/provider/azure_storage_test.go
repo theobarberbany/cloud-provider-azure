@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2021-02-01/storage"
+	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2021-09-01/storage"
 	"github.com/golang/mock/gomock"
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/fileclient"
@@ -149,7 +149,8 @@ func TestCreateFileShare(t *testing.T) {
 	for _, test := range tests {
 		mockFileClient := mockfileclient.NewMockInterface(ctrl)
 		cloud.FileClient = mockFileClient
-		mockFileClient.EXPECT().CreateFileShare(gomock.Any(), gomock.Any(), gomock.Any()).Return(test.err).AnyTimes()
+		mockFileClient.EXPECT().WithSubscriptionID(gomock.Any()).Return(mockFileClient).AnyTimes()
+		mockFileClient.EXPECT().CreateFileShare(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(test.err).AnyTimes()
 
 		mockStorageAccountsClient := mockstorageaccountclient.NewMockInterface(ctrl)
 		cloud.StorageAccountClient = mockStorageAccountsClient
@@ -193,6 +194,9 @@ func TestDeleteFileShare(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
+	ctx, cancel := getContextWithCancel()
+	defer cancel()
+
 	cloud := &Cloud{}
 	tests := []struct {
 		rg   string
@@ -222,9 +226,10 @@ func TestDeleteFileShare(t *testing.T) {
 	for _, test := range tests {
 		mockFileClient := mockfileclient.NewMockInterface(ctrl)
 		cloud.FileClient = mockFileClient
-		mockFileClient.EXPECT().DeleteFileShare(gomock.Any(), gomock.Any(), gomock.Any()).Return(test.err).Times(1)
+		mockFileClient.EXPECT().WithSubscriptionID(gomock.Any()).Return(mockFileClient).AnyTimes()
+		mockFileClient.EXPECT().DeleteFileShare(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(test.err).Times(1)
 
-		err := cloud.DeleteFileShare(test.rg, test.acct, test.name)
+		err := cloud.DeleteFileShare(ctx, "", test.rg, test.acct, test.name)
 		if test.expectErr && err == nil {
 			t.Errorf("unexpected non-error")
 			continue
@@ -240,9 +245,13 @@ func TestResizeFileShare(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
+	ctx, cancel := getContextWithCancel()
+	defer cancel()
+
 	cloud := &Cloud{}
 	mockFileClient := mockfileclient.NewMockInterface(ctrl)
-	mockFileClient.EXPECT().ResizeFileShare(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	mockFileClient.EXPECT().WithSubscriptionID(gomock.Any()).Return(mockFileClient).AnyTimes()
+	mockFileClient.EXPECT().ResizeFileShare(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	cloud.FileClient = mockFileClient
 
 	tests := []struct {
@@ -267,7 +276,7 @@ func TestResizeFileShare(t *testing.T) {
 		mockStorageAccountsClient := mockstorageaccountclient.NewMockInterface(ctrl)
 		cloud.StorageAccountClient = mockStorageAccountsClient
 
-		err := cloud.ResizeFileShare(test.rg, test.acct, test.name, test.gb)
+		err := cloud.ResizeFileShare(ctx, "", test.rg, test.acct, test.name, test.gb)
 		if test.expectErr && err == nil {
 			t.Errorf("unexpected non-error")
 			continue
@@ -283,9 +292,13 @@ func TestGetFileShare(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
+	ctx, cancel := getContextWithCancel()
+	defer cancel()
+
 	cloud := &Cloud{}
 	mockFileClient := mockfileclient.NewMockInterface(ctrl)
-	mockFileClient.EXPECT().GetFileShare(gomock.Any(), gomock.Any(), gomock.Any()).Return(storage.FileShare{}, nil).AnyTimes()
+	mockFileClient.EXPECT().WithSubscriptionID(gomock.Any()).Return(mockFileClient).AnyTimes()
+	mockFileClient.EXPECT().GetFileShare(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(storage.FileShare{}, nil).AnyTimes()
 	cloud.FileClient = mockFileClient
 
 	tests := []struct {
@@ -308,7 +321,7 @@ func TestGetFileShare(t *testing.T) {
 		mockStorageAccountsClient := mockstorageaccountclient.NewMockInterface(ctrl)
 		cloud.StorageAccountClient = mockStorageAccountsClient
 
-		_, err := cloud.GetFileShare(test.rg, test.acct, test.name)
+		_, err := cloud.GetFileShare(ctx, "", test.rg, test.acct, test.name)
 		if test.expectErr && err == nil {
 			t.Errorf("unexpected non-error")
 			continue

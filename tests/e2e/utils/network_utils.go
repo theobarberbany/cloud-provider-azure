@@ -142,7 +142,7 @@ func (azureTestClient *AzureTestClient) getSecurityGroupList() (result aznetwork
 	err = wait.PollImmediate(poll, singleCallTimeout, func() (bool, error) {
 		result, err = securityGroupsClient.List(context.Background(), azureTestClient.GetResourceGroup())
 		if err != nil {
-			Logf("error when listing sgs: %w", err)
+			Logf("error when listing security groups: %w", err)
 			if !IsRetryableAPIError(err) {
 				return false, err
 			}
@@ -155,18 +155,23 @@ func (azureTestClient *AzureTestClient) getSecurityGroupList() (result aznetwork
 
 // GetClusterSecurityGroups gets the security groups of the cluster.
 func (azureTestClient *AzureTestClient) GetClusterSecurityGroups() (ret []aznetwork.SecurityGroup, err error) {
-	securityGroupsList, err := azureTestClient.getSecurityGroupList()
-	if err != nil {
-		return
-	}
-	Logf("got sg list, length = %d", len(securityGroupsList.Values()))
+	err = wait.PollImmediate(time.Second, time.Minute, func() (bool, error) {
+		securityGroupsList, err := azureTestClient.getSecurityGroupList()
+		if err != nil {
+			return false, err
+		}
 
-	if len(securityGroupsList.Values()) != 0 {
-		ret = securityGroupsList.Values()
-		return
+		sgListLength := len(securityGroupsList.Values())
+		Logf("got sg list, length = %d", sgListLength)
+		if sgListLength != 0 {
+			ret = securityGroupsList.Values()
+			return true, nil
+		}
+		return false, nil
+	})
+	if err == wait.ErrWaitTimeout {
+		err = fmt.Errorf("could not find the cluster security group in resource group %s", azureTestClient.GetResourceGroup())
 	}
-
-	err = fmt.Errorf("could not find the cluster security group in resource group %s", azureTestClient.GetResourceGroup())
 	return
 }
 
@@ -381,6 +386,20 @@ func SelectAvailablePrivateIP(tc *AzureTestClient) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("Find no availabePrivateIP in subnet CIDR %s", subnet)
+}
+
+// GetPublicIPFromAddress finds public ip according to ip address
+func (azureTestClient *AzureTestClient) GetPublicIPFromAddress(resourceGroupName, ipAddr string) (pip aznetwork.PublicIPAddress, err error) {
+	pipList, err := azureTestClient.ListPublicIPs(resourceGroupName)
+	if err != nil {
+		return pip, err
+	}
+	for _, pip := range pipList {
+		if strings.EqualFold(to.String(pip.IPAddress), ipAddr) {
+			return pip, err
+		}
+	}
+	return
 }
 
 // ListPublicIPs lists all the publicIP addresses active
