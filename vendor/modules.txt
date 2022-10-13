@@ -1216,7 +1216,7 @@ k8s.io/client-go/util/homedir
 k8s.io/client-go/util/keyutil
 k8s.io/client-go/util/retry
 k8s.io/client-go/util/workqueue
-# k8s.io/cloud-provider v0.26.1
+# k8s.io/cloud-provider v0.25.2 => github.com/openshift/kubernetes-cloud-provider v0.0.0-20221007081959-e07817829a38
 ## explicit; go 1.19
 k8s.io/cloud-provider
 k8s.io/cloud-provider/api
@@ -1337,7 +1337,7 @@ k8s.io/utils/path
 k8s.io/utils/pointer
 k8s.io/utils/strings/slices
 k8s.io/utils/trace
-# sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.0.35
+# sigs.k8s.io/apiserver-network-proxy/konnectivity-client v0.0.33
 ## explicit; go 1.17
 sigs.k8s.io/apiserver-network-proxy/konnectivity-client/pkg/client
 sigs.k8s.io/apiserver-network-proxy/konnectivity-client/pkg/client/metrics
