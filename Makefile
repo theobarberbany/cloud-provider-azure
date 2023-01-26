@@ -317,11 +317,11 @@ ifdef JUNIT
 endif
 
 .PHONY: test-check
-test-check: test-lint test-boilerplate test-helm ## Run all static checks.
+test-check: test-boilerplate test-helm verify-vendor-licenses ## Run all static checks.
 
-.PHONY: test-lint
-test-lint: ## Run golint test.
-	hack/verify-golint.sh
+.PHONY: lint
+lint: golangci-lint ## Run golangci-lint against code.
+	$(LINTER) run -v
 
 .PHONY: test-boilerplate
 test-boilerplate: ## Run boilerplate test.
@@ -330,6 +330,10 @@ test-boilerplate: ## Run boilerplate test.
 .PHONY: test-helm
 test-helm: ## Validate helm charts
 	hack/verify-helm-repo.sh
+
+.PHONY: verify-vendor-licenses
+verify-vendor-licenses: ## Verify vendor licenses
+	hack/verify-azure-vendor-licenses.sh
 
 .PHONY: update-helm
 update-helm: ## Update helm charts
@@ -347,8 +351,12 @@ update-gofmt: ## Update go formats.
 update-mocks: ## Create or update mock clients.
 	@hack/update-mock-clients.sh
 
+.PHONY: update-vendor-licenses
+update-vendor-licenses: ## Update vendor licenses
+	hack/update-azure-vendor-licenses.sh
+
 .PHONY: update
-update: update-dependencies update-gofmt update-mocks ## Update go formats, mocks and dependencies.
+update: update-dependencies update-gofmt update-mocks update-vendor-licenses ## Update go formats, mocks and dependencies.
 
 test-e2e: ## Run k8s e2e tests.
 	hack/test_k8s_e2e.sh $(TEST_E2E_ARGS)
@@ -379,11 +387,25 @@ cloud-build-prerequisites:
 	apk add --no-cache jq
 
 .PHONY: release-staging
-release-staging:
-	ENABLE_GIT_COMMANDS=false IMAGE_REGISTRY=$(STAGING_REGISTRY) $(MAKE) build-images push-images
-
+release-staging: ## Release the cloud provider images.
+ifeq ($(CLOUD_BUILD_IMAGE),ccm)
+	ENABLE_GIT_COMMAND=$(ENABLE_GIT_COMMAND) $(MAKE) build-all-ccm-images push-multi-arch-controller-manager-image
+else
+	ENABLE_GIT_COMMAND=$(ENABLE_GIT_COMMAND) $(MAKE) cloud-build-prerequisites build-all-node-images push-multi-arch-node-manager-image
+endif
 ## --------------------------------------
-## Openshift specific include
+##@ Deploy clusters
 ## --------------------------------------
 
-include openshift.mk
+.PHONY: deploy-cluster
+deploy-cluster:
+	hack/deploy-cluster-capz.sh
+
+##@ Tools
+
+LINTER = $(shell pwd)/bin/golangci-lint
+LINTER_VERSION = v1.50.1
+.PHONY: golangci-lint
+golangci-lint:  ## Download golangci-lint locally if necessary.
+	@echo "Installing golangci-lint"
+	@test -s $(LINTER) || curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/$(LINTER_VERSION)/install.sh | sh -s -- -b $(shell pwd)/bin $(LINTER_VERSION)
