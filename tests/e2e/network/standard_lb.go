@@ -22,7 +22,7 @@ import (
 	"strings"
 
 	azcompute "github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
@@ -73,11 +73,13 @@ var _ = Describe("[StandardLoadBalancer] Standard load balancer", func() {
 	})
 
 	AfterEach(func() {
-		err := cs.AppsV1().Deployments(ns.Name).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
-		Expect(err).NotTo(HaveOccurred())
+		if cs != nil && ns != nil {
+			err := cs.AppsV1().Deployments(ns.Name).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
+			Expect(err).NotTo(HaveOccurred())
 
-		err = utils.DeleteNamespace(cs, ns.Name)
-		Expect(err).NotTo(HaveOccurred())
+			err = utils.DeleteNamespace(cs, ns.Name)
+			Expect(err).NotTo(HaveOccurred())
+		}
 
 		cs = nil
 		ns = nil
@@ -90,7 +92,9 @@ var _ = Describe("[StandardLoadBalancer] Standard load balancer", func() {
 		}
 
 		rgName := tc.GetResourceGroup()
-		publicIP := createAndExposeDefaultServiceWithAnnotation(cs, serviceName, ns.Name, labels, map[string]string{}, ports)
+		publicIPs := createAndExposeDefaultServiceWithAnnotation(cs, tc.IPFamily, serviceName, ns.Name, labels, map[string]string{}, ports)
+		Expect(len(publicIPs)).NotTo(BeZero())
+		publicIP := publicIPs[0]
 		lb := getAzureLoadBalancerFromPIP(tc, publicIP, rgName, rgName)
 
 		nodeList, err := utils.GetAgentNodes(cs)
@@ -170,7 +174,9 @@ var _ = Describe("[StandardLoadBalancer] Standard load balancer", func() {
 		}
 
 		rgName := tc.GetResourceGroup()
-		publicIP := createAndExposeDefaultServiceWithAnnotation(cs, serviceName, ns.Name, labels, map[string]string{}, ports)
+		publicIPs := createAndExposeDefaultServiceWithAnnotation(cs, tc.IPFamily, serviceName, ns.Name, labels, map[string]string{}, ports)
+		Expect(len(publicIPs)).NotTo(BeZero())
+		publicIP := publicIPs[0]
 		lb := getAzureLoadBalancerFromPIP(tc, publicIP, rgName, rgName)
 
 		Expect(lb.OutboundRules).NotTo(BeNil())

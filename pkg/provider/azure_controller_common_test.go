@@ -267,6 +267,7 @@ func TestCommonAttachDisk(t *testing.T) {
 		tt := test
 		t.Run(tt.desc, func(t *testing.T) {
 			testCloud := GetTestCloud(ctrl)
+			testCloud.DisableDiskLunCheck = true
 			diskURI := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Compute/disks/%s",
 				testCloud.SubscriptionID, testCloud.ResourceGroup, test.diskName)
 			if tt.isBadDiskURI {
@@ -293,7 +294,7 @@ func TestCommonAttachDisk(t *testing.T) {
 				}()
 			}
 
-			lun, err := testCloud.AttachDisk(ctx, true, "", diskURI, tt.nodeName, compute.CachingTypesReadOnly, tt.existedDisk)
+			lun, err := testCloud.AttachDisk(ctx, true, test.diskName, diskURI, tt.nodeName, compute.CachingTypesReadOnly, tt.existedDisk)
 
 			assert.Equal(t, tt.expectedLun, lun, "TestCase[%d]: %s", i, tt.desc)
 			assert.Equal(t, tt.expectErr, err != nil, "TestCase[%d]: %s, return error: %v", i, tt.desc, err)
@@ -543,15 +544,15 @@ func TestCommonDetachDisk(t *testing.T) {
 			desc:        "no error shall be returned if there's no matching disk according to given diskName",
 			vmList:      map[string]string{"vm1": "PowerState/Running"},
 			nodeName:    "vm1",
-			diskName:    "disk2",
+			diskName:    "diskx",
 			expectedErr: false,
 		},
 		{
-			desc:        "no error shall be returned if the disk exists",
+			desc:        "error shall be returned if the disk exists",
 			vmList:      map[string]string{"vm1": "PowerState/Running"},
 			nodeName:    "vm1",
 			diskName:    "disk1",
-			expectedErr: false,
+			expectedErr: true,
 		},
 	}
 
@@ -811,22 +812,22 @@ func TestFilteredDetachingDisks(t *testing.T) {
 
 	disks := []compute.DataDisk{
 		{
-			Name:         pointer.StringPtr("DiskName1"),
-			ToBeDetached: pointer.BoolPtr(false),
+			Name:         pointer.String("DiskName1"),
+			ToBeDetached: pointer.Bool(false),
 			ManagedDisk: &compute.ManagedDiskParameters{
-				ID: pointer.StringPtr("ManagedID"),
+				ID: pointer.String("ManagedID"),
 			},
 		},
 		{
-			Name:         pointer.StringPtr("DiskName2"),
-			ToBeDetached: pointer.BoolPtr(true),
+			Name:         pointer.String("DiskName2"),
+			ToBeDetached: pointer.Bool(true),
 		},
 		{
-			Name:         pointer.StringPtr("DiskName3"),
+			Name:         pointer.String("DiskName3"),
 			ToBeDetached: nil,
 		},
 		{
-			Name:         pointer.StringPtr("DiskName4"),
+			Name:         pointer.String("DiskName4"),
 			ToBeDetached: nil,
 		},
 	}
@@ -1048,21 +1049,21 @@ func TestFilterNonExistingDisks(t *testing.T) {
 			},
 		},
 		{
-			Name: pointer.StringPtr("DiskName2"),
+			Name: pointer.String("DiskName2"),
 			ManagedDisk: &compute.ManagedDiskParameters{
-				ID: pointer.StringPtr(diskURIPrefix + "DiskName2"),
+				ID: pointer.String(diskURIPrefix + "DiskName2"),
 			},
 		},
 		{
-			Name: pointer.StringPtr("DiskName3"),
+			Name: pointer.String("DiskName3"),
 			ManagedDisk: &compute.ManagedDiskParameters{
-				ID: pointer.StringPtr(diskURIPrefix + "DiskName3"),
+				ID: pointer.String(diskURIPrefix + "DiskName3"),
 			},
 		},
 		{
-			Name: pointer.StringPtr("DiskName4"),
+			Name: pointer.String("DiskName4"),
 			ManagedDisk: &compute.ManagedDiskParameters{
-				ID: pointer.StringPtr(diskURIPrefix + "DiskName4"),
+				ID: pointer.String(diskURIPrefix + "DiskName4"),
 			},
 		},
 	}
@@ -1199,10 +1200,10 @@ func TestAttachDiskRequestFuncs(t *testing.T) {
 			diskURI := fmt.Sprintf("%s%d", test.diskURI, i)
 			diskName := fmt.Sprintf("%s%d", test.diskName, i)
 			attachDiskOptions := &AttachDiskOptions{diskName: diskName}
-			err := common.insertAttachDiskRequest(diskURI, test.nodeName, attachDiskOptions)
+			_, err := common.insertAttachDiskRequest(diskURI, test.nodeName, attachDiskOptions)
 			assert.Equal(t, test.expectedErr, err != nil, "TestCase[%d]: %s", i, test.desc)
 			if test.duplicateDiskRequest {
-				err := common.insertAttachDiskRequest(diskURI, test.nodeName, attachDiskOptions)
+				_, err := common.insertAttachDiskRequest(diskURI, test.nodeName, attachDiskOptions)
 				assert.Equal(t, test.expectedErr, err != nil, "TestCase[%d]: %s", i, test.desc)
 			}
 		}
@@ -1275,10 +1276,10 @@ func TestDetachDiskRequestFuncs(t *testing.T) {
 		for i := 1; i <= test.diskNum; i++ {
 			diskURI := fmt.Sprintf("%s%d", test.diskURI, i)
 			diskName := fmt.Sprintf("%s%d", test.diskName, i)
-			err := common.insertDetachDiskRequest(diskName, diskURI, test.nodeName)
+			_, err := common.insertDetachDiskRequest(diskName, diskURI, test.nodeName)
 			assert.Equal(t, test.expectedErr, err != nil, "TestCase[%d]: %s", i, test.desc)
 			if test.duplicateDiskRequest {
-				err := common.insertDetachDiskRequest(diskName, diskURI, test.nodeName)
+				_, err := common.insertDetachDiskRequest(diskName, diskURI, test.nodeName)
 				assert.Equal(t, test.expectedErr, err != nil, "TestCase[%d]: %s", i, test.desc)
 			}
 		}

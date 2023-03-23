@@ -25,7 +25,7 @@ import (
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	v1 "k8s.io/api/core/v1"
@@ -67,8 +67,10 @@ var _ = Describe("Azure node resources", Label(utils.TestSuiteLabelNode), func()
 	})
 
 	AfterEach(func() {
-		err := utils.DeleteNamespace(cs, ns.Name)
-		Expect(err).NotTo(HaveOccurred())
+		if cs != nil && ns != nil {
+			err := utils.DeleteNamespace(cs, ns.Name)
+			Expect(err).NotTo(HaveOccurred())
+		}
 
 		cs = nil
 		ns = nil
@@ -301,11 +303,13 @@ var _ = Describe("Azure nodes", func() {
 	})
 
 	AfterEach(func() {
-		err := cs.AppsV1().Deployments(ns.Name).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
-		Expect(err).NotTo(HaveOccurred())
+		if cs != nil && ns != nil {
+			err := cs.AppsV1().Deployments(ns.Name).Delete(context.TODO(), serviceName, metav1.DeleteOptions{})
+			Expect(err).NotTo(HaveOccurred())
 
-		err = utils.DeleteNamespace(cs, ns.Name)
-		Expect(err).NotTo(HaveOccurred())
+			err = utils.DeleteNamespace(cs, ns.Name)
+			Expect(err).NotTo(HaveOccurred())
+		}
 
 		cs = nil
 		ns = nil
@@ -380,7 +384,9 @@ var _ = Describe("Azure nodes", func() {
 		Expect(ok).To(BeTrue())
 		Expect(nodeRG).NotTo(Equal(rgMaster))
 
-		publicIP := createAndExposeDefaultServiceWithAnnotation(cs, serviceName, ns.Name, labels, map[string]string{}, ports)
+		publicIPs := createAndExposeDefaultServiceWithAnnotation(cs, tc.IPFamily, serviceName, ns.Name, labels, map[string]string{}, ports)
+		Expect(len(publicIPs)).NotTo(BeZero())
+		publicIP := publicIPs[0]
 		lb := getAzureLoadBalancerFromPIP(tc, publicIP, rgMaster, rgMaster)
 
 		utils.Logf("finding NIC of the node %s, assuming it's in the same rg as master", nodeNotInRGMaster.Name)

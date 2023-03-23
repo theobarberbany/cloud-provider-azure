@@ -32,17 +32,17 @@ TEST_E2E_ARGS ?= '--ginkgo.focus=Port\sforwarding'
 
 ALL_ARCH.linux = amd64 arm arm64
 # as windows server core does not support arm64 windows image, trakced by the following link,
-# and only 1809 has arm64 nanoserver support, we support here only amd64 windows image
+# and only 1809/ltsc2019 has arm64 nanoserver support, we support here only amd64 windows image
 # https://github.com/microsoft/Windows-Containers/issues/195
 ALL_ARCH.windows = amd64
-ALL_OSVERSIONS.windows := 1809 2004 20H2 ltsc2022
+ALL_OSVERSIONS.windows := ltsc2019 ltsc2022
 ALL_OS_ARCH.windows = $(foreach arch, $(ALL_ARCH.windows), $(foreach osversion, ${ALL_OSVERSIONS.windows}, ${osversion}-${arch}))
 
 # The current context of image building
 # The architecture of the image
 ARCH ?= amd64
-# OS Version for the Windows images: 1809, 2004, 20H2, ltsc2022
-WINDOWS_OSVERSION ?= 1809
+# OS Version for the Windows images: ltsc2019, ltsc2022
+WINDOWS_OSVERSION ?= ltsc2019
 # The output type for `docker buildx build` could either be docker (local), or registry.
 OUTPUT_TYPE ?= docker
 
@@ -145,7 +145,9 @@ build-ccm-image: buildx-setup docker-pull-prerequisites ## Build controller-mana
 		--build-arg ARCH="$(ARCH)" \
 		--build-arg VERSION="$(VERSION)" \
 		--file Dockerfile \
-		--tag $(CONTROLLER_MANAGER_IMAGE) .
+		--tag $(CONTROLLER_MANAGER_IMAGE) . \
+		--provenance=false \
+		--sbom=false
 
 .PHONY: build-node-image-linux
 build-node-image-linux: buildx-setup docker-pull-prerequisites ## Build node-manager image.
@@ -157,7 +159,9 @@ build-node-image-linux: buildx-setup docker-pull-prerequisites ## Build node-man
 		--build-arg ARCH="$(ARCH)" \
 		--build-arg VERSION="$(VERSION)" \
 		--file cloud-node-manager.Dockerfile \
-		--tag $(NODE_MANAGER_LINUX_FULL_IMAGE_PREFIX)-$(ARCH) .
+		--tag $(NODE_MANAGER_LINUX_FULL_IMAGE_PREFIX)-$(ARCH) . \
+		--provenance=false \
+		--sbom=false
 
 .PHONY: build-node-image-windows
 build-node-image-windows: buildx-setup $(BIN_DIR)/azure-cloud-node-manager.exe ## Build node-manager image for Windows.
@@ -167,7 +171,9 @@ build-node-image-windows: buildx-setup $(BIN_DIR)/azure-cloud-node-manager.exe #
 		-t $(NODE_MANAGER_WINDOWS_FULL_IMAGE_PREFIX)-$(WINDOWS_OSVERSION)-$(ARCH) \
 		--build-arg OSVERSION=$(WINDOWS_OSVERSION) \
 		--build-arg ARCH=$(ARCH) \
-		-f cloud-node-manager-windows.Dockerfile .
+		-f cloud-node-manager-windows.Dockerfile . \
+		--provenance=false \
+		--sbom=false
 
 .PHONY: build-ccm-e2e-test-image
 build-ccm-e2e-test-image: ## Build e2e test image.
@@ -321,7 +327,7 @@ test-check: test-boilerplate test-helm verify-vendor-licenses ## Run all static 
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint against code.
-	$(LINTER) run -v
+	$(LINTER) run -v -E exportloopref
 
 .PHONY: test-boilerplate
 test-boilerplate: ## Run boilerplate test.
@@ -387,11 +393,25 @@ cloud-build-prerequisites:
 	apk add --no-cache jq
 
 .PHONY: release-staging
-release-staging:
-	ENABLE_GIT_COMMANDS=false IMAGE_REGISTRY=$(STAGING_REGISTRY) $(MAKE) build-images push-images
-
+release-staging: ## Release the cloud provider images.
+ifeq ($(CLOUD_BUILD_IMAGE),ccm)
+	ENABLE_GIT_COMMAND=$(ENABLE_GIT_COMMAND) $(MAKE) build-all-ccm-images push-multi-arch-controller-manager-image
+else
+	ENABLE_GIT_COMMAND=$(ENABLE_GIT_COMMAND) $(MAKE) cloud-build-prerequisites build-all-node-images push-multi-arch-node-manager-image
+endif
 ## --------------------------------------
-## Openshift specific include
+##@ Deploy clusters
 ## --------------------------------------
 
-include openshift.mk
+.PHONY: deploy-cluster
+deploy-cluster:
+	hack/deploy-cluster-capz.sh
+
+##@ Tools
+
+LINTER = $(shell pwd)/bin/golangci-lint
+LINTER_VERSION = v1.50.1
+.PHONY: golangci-lint
+golangci-lint:  ## Download golangci-lint locally if necessary.
+	@echo "Installing golangci-lint"
+	@test -s $(LINTER) || curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell pwd)/bin $(LINTER_VERSION)
