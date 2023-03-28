@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
 	"github.com/Azure/azure-sdk-for-go/services/privatedns/mgmt/2018-09-01/privatedns"
 	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2021-09-01/storage"
 	"github.com/golang/mock/gomock"
@@ -509,7 +509,7 @@ func TestEnsureStorageAccount(t *testing.T) {
 				SubscriptionID:        test.subscriptionID,
 				AccessTier:            test.accessTier,
 				StorageType:           test.storageType,
-				EnableBlobVersioning:  pointer.BoolPtr(true),
+				EnableBlobVersioning:  pointer.Bool(true),
 				SoftDeleteBlobs:       7,
 				SoftDeleteContainers:  7,
 			}
@@ -1163,7 +1163,7 @@ func TestIsMultichannelEnabledEqual(t *testing.T) {
 	multichannelEnabled := storage.FileServiceProperties{
 		FileServicePropertiesProperties: &storage.FileServicePropertiesProperties{
 			ProtocolSettings: &storage.ProtocolSettings{
-				Smb: &storage.SmbSetting{Multichannel: &storage.Multichannel{Enabled: pointer.BoolPtr(true)}},
+				Smb: &storage.SmbSetting{Multichannel: &storage.Multichannel{Enabled: pointer.Bool(true)}},
 			},
 		},
 	}
@@ -1171,7 +1171,7 @@ func TestIsMultichannelEnabledEqual(t *testing.T) {
 	multichannelDisabled := storage.FileServiceProperties{
 		FileServicePropertiesProperties: &storage.FileServicePropertiesProperties{
 			ProtocolSettings: &storage.ProtocolSettings{
-				Smb: &storage.SmbSetting{Multichannel: &storage.Multichannel{Enabled: pointer.BoolPtr(false)}},
+				Smb: &storage.SmbSetting{Multichannel: &storage.Multichannel{Enabled: pointer.Bool(false)}},
 			},
 		},
 	}
@@ -1310,7 +1310,7 @@ func TestIsDisableFileServiceDeleteRetentionPolicyEqual(t *testing.T) {
 	deleteRetentionPolicyEnabled := storage.FileServiceProperties{
 		FileServicePropertiesProperties: &storage.FileServicePropertiesProperties{
 			ShareDeleteRetentionPolicy: &storage.DeleteRetentionPolicy{
-				Enabled: pointer.BoolPtr(true),
+				Enabled: pointer.Bool(true),
 			},
 		},
 	}
@@ -1318,7 +1318,7 @@ func TestIsDisableFileServiceDeleteRetentionPolicyEqual(t *testing.T) {
 	deleteRetentionPolicyDisabled := storage.FileServiceProperties{
 		FileServicePropertiesProperties: &storage.FileServicePropertiesProperties{
 			ShareDeleteRetentionPolicy: &storage.DeleteRetentionPolicy{
-				Enabled: pointer.BoolPtr(false),
+				Enabled: pointer.Bool(false),
 			},
 		},
 	}

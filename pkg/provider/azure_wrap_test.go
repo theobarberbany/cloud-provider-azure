@@ -22,7 +22,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2021-08-01/network"
+	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 
@@ -68,32 +68,32 @@ func TestIsNodeUnmanaged(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		unmanagedNodes sets.String
+		unmanagedNodes sets.Set[string]
 		node           string
 		expected       bool
 		expectErr      bool
 	}{
 		{
 			name:           "unmanaged node should return true",
-			unmanagedNodes: sets.NewString("node1", "node2"),
+			unmanagedNodes: sets.New("node1", "node2"),
 			node:           "node1",
 			expected:       true,
 		},
 		{
 			name:           "managed node should return false",
-			unmanagedNodes: sets.NewString("node1", "node2"),
+			unmanagedNodes: sets.New("node1", "node2"),
 			node:           "node3",
 			expected:       false,
 		},
 		{
 			name:           "empty unmanagedNodes should return true",
-			unmanagedNodes: sets.NewString(),
+			unmanagedNodes: sets.New[string](),
 			node:           "node3",
 			expected:       false,
 		},
 		{
 			name:           "no synced informer should report error",
-			unmanagedNodes: sets.NewString(),
+			unmanagedNodes: sets.New[string](),
 			node:           "node1",
 			expectErr:      true,
 		},
