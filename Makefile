@@ -32,17 +32,17 @@ TEST_E2E_ARGS ?= '--ginkgo.focus=Port\sforwarding'
 
 ALL_ARCH.linux = amd64 arm arm64
 # as windows server core does not support arm64 windows image, trakced by the following link,
-# and only 1809/ltsc2019 has arm64 nanoserver support, we support here only amd64 windows image
+# and only 1809 has arm64 nanoserver support, we support here only amd64 windows image
 # https://github.com/microsoft/Windows-Containers/issues/195
 ALL_ARCH.windows = amd64
-ALL_OSVERSIONS.windows := ltsc2019 ltsc2022
+ALL_OSVERSIONS.windows := 1809 2004 20H2 ltsc2022
 ALL_OS_ARCH.windows = $(foreach arch, $(ALL_ARCH.windows), $(foreach osversion, ${ALL_OSVERSIONS.windows}, ${osversion}-${arch}))
 
 # The current context of image building
 # The architecture of the image
 ARCH ?= amd64
-# OS Version for the Windows images: ltsc2019, ltsc2022
-WINDOWS_OSVERSION ?= ltsc2019
+# OS Version for the Windows images: 1809, 2004, 20H2, ltsc2022
+WINDOWS_OSVERSION ?= 1809
 # The output type for `docker buildx build` could either be docker (local), or registry.
 OUTPUT_TYPE ?= docker
 
@@ -124,8 +124,8 @@ $(BIN_DIR)/azure-acr-credential-provider.exe: $(PKG_CONFIG) $(wildcard cmd/acr-c
 
 .PHONY: docker-pull-prerequisites
 docker-pull-prerequisites: ## Pull prerequisite images.
-	docker pull docker/dockerfile:1.3.1
-	docker pull docker.io/library/golang:1.18-buster
+	docker pull docker/dockerfile:1
+	docker pull docker.io/library/golang:buster
 	docker pull gcr.io/distroless/static:latest
 
 buildx-setup:
@@ -393,11 +393,25 @@ cloud-build-prerequisites:
 	apk add --no-cache jq
 
 .PHONY: release-staging
-release-staging:
-	ENABLE_GIT_COMMANDS=false IMAGE_REGISTRY=$(STAGING_REGISTRY) $(MAKE) build-images push-images
-
+release-staging: ## Release the cloud provider images.
+ifeq ($(CLOUD_BUILD_IMAGE),ccm)
+	ENABLE_GIT_COMMAND=$(ENABLE_GIT_COMMAND) $(MAKE) build-all-ccm-images push-multi-arch-controller-manager-image
+else
+	ENABLE_GIT_COMMAND=$(ENABLE_GIT_COMMAND) $(MAKE) cloud-build-prerequisites build-all-node-images push-multi-arch-node-manager-image
+endif
 ## --------------------------------------
-## Openshift specific include
+##@ Deploy clusters
 ## --------------------------------------
 
-include openshift.mk
+.PHONY: deploy-cluster
+deploy-cluster:
+	hack/deploy-cluster-capz.sh
+
+##@ Tools
+
+LINTER = $(shell pwd)/bin/golangci-lint
+LINTER_VERSION = v1.51.2
+.PHONY: golangci-lint
+golangci-lint:  ## Download golangci-lint locally if necessary.
+	@echo "Installing golangci-lint"
+	@test -s $(LINTER) || curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell pwd)/bin $(LINTER_VERSION)

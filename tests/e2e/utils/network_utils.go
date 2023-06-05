@@ -43,7 +43,7 @@ var (
 	DualStack IPFamily = "DualStack"
 
 	Suffixes = map[bool]string{
-		false: "-IPv4",
+		false: "",
 		true:  "-IPv6",
 	}
 
@@ -124,23 +124,31 @@ func (azureTestClient *AzureTestClient) DeleteSubnet(vnetName string, subnetName
 	return wait.PollImmediate(poll, singleCallTimeout, func() (bool, error) {
 		_, err := subnetClient.Delete(context.Background(), azureTestClient.GetResourceGroup(), vnetName, subnetName)
 		if err != nil {
+			Logf("unexpected error %q while deleting subnet %s", err.Error(), subnetName)
 			return false, nil
 		}
 
-		_, err = subnetClient.Get(
+		subnet, err := subnetClient.Get(
 			context.Background(),
 			azureTestClient.GetResourceGroup(),
 			vnetName,
 			subnetName,
 			"")
 		if err == nil {
-			Logf("subnet %s still exists, will retry", subnetName)
+			ipConfigIDs := []string{}
+			if subnet.IPConfigurations != nil {
+				for _, ipConfig := range *subnet.IPConfigurations {
+					ipConfigIDs = append(ipConfigIDs, pointer.StringDeref(ipConfig.ID, ""))
+				}
+			}
+
+			Logf("subnet %s still exists with IP config IDs %q, will retry", subnetName, ipConfigIDs)
 			return false, nil
 		} else if strings.Contains(err.Error(), "StatusCode=404") {
 			Logf("subnet %s has been deleted", subnetName)
 			return true, nil
 		}
-		Logf("encountered unexpected error %v while deleting subnet %s", err, subnetName)
+		Logf("encountered unexpected error %w while getting subnet %s", err, subnetName)
 		return true, nil
 	})
 }
@@ -169,10 +177,7 @@ func GetNextSubnetCIDRs(vnet aznetwork.VirtualNetwork, ipFamily IPFamily) ([]*ne
 	} else if ipFamily == IPv4 {
 		vnetCIDRs = append(vnetCIDRs, (*vnet.AddressSpace.AddressPrefixes)[0])
 	} else {
-		for i := range *vnet.AddressSpace.AddressPrefixes {
-			addrPrefix := (*vnet.AddressSpace.AddressPrefixes)[i]
-			vnetCIDRs = append(vnetCIDRs, addrPrefix)
-		}
+		vnetCIDRs = append(vnetCIDRs, *vnet.AddressSpace.AddressPrefixes...)
 	}
 
 	var existSubnets []string
@@ -253,7 +258,7 @@ func CreateLoadBalancerServiceManifest(name string, annotation map[string]string
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        name,
 			Namespace:   namespace,
-			Annotations: annotation,
+			Annotations: DeepCopyServiceAnnotation(annotation),
 		},
 		Spec: v1.ServiceSpec{
 			Selector:       labels,

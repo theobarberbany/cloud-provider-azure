@@ -24,7 +24,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
+	"k8s.io/apimachinery/pkg/util/wait"
+
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -66,7 +68,7 @@ func setTestVirtualMachines(c *Cloud, vmList map[string]string, isDataDisksFull 
 			},
 		}
 		vm.VirtualMachineProperties = &compute.VirtualMachineProperties{
-			ProvisioningState: pointer.String(string(compute.ProvisioningStateSucceeded)),
+			ProvisioningState: pointer.String(string(consts.ProvisioningStateSucceeded)),
 			HardwareProfile: &compute.HardwareProfile{
 				VMSize: compute.StandardA0,
 			},
@@ -512,7 +514,7 @@ func TestNodeAddresses(t *testing.T) {
 			metadataName:        "vm1",
 			vmType:              consts.VMTypeStandard,
 			useInstanceMetadata: true,
-			expectedErrMsg:      fmt.Errorf("timed out waiting for the condition"),
+			expectedErrMsg:      wait.ErrorInterrupted(fmt.Errorf("timed out waiting for the condition")),
 		},
 		{
 			name:                "NodeAddresses should get IP addresses from Azure API if node's name isn't equal to metadataName",

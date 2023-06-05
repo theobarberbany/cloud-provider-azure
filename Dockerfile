@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.3.1
-
 # Copyright 2019 The Kubernetes Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM --platform=linux/amd64 golang:1.20.2-buster AS builder
+# syntax=docker/dockerfile:1
+
+FROM --platform=linux/amd64 golang:1.20.4-buster@sha256:4cf6dc46fc03a7aecde79ccc135d875129145b065cb1d29747ac7c8d86979266 AS builder
 
 ARG ENABLE_GIT_COMMAND=true
 ARG ARCH=amd64

@@ -23,7 +23,7 @@ import (
 	"regexp"
 	"strings"
 
-	azcompute "github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
+	azcompute "github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -47,11 +47,14 @@ func FindTestVMSS(tc *AzureTestClient, rgName string) (*azcompute.VirtualMachine
 	}
 
 	vmssList := list.Values()
-	if len(vmssList) == 0 {
-		return nil, nil
+	for i := range vmssList {
+		vmss := vmssList[i]
+		if IsAutoscalingAKSCluster() && vmss.Name != nil && strings.Contains(*vmss.Name, SystemPool) {
+			continue
+		}
+		return &vmss, nil
 	}
-
-	return &vmssList[0], nil
+	return nil, nil
 }
 
 func Scale(tc *AzureTestClient, vmssName string, instanceCount int64) error {
@@ -158,6 +161,46 @@ func waitVMSSVMCountToEqual(tc *AzureTestClient, expected int, vmssName string) 
 		return count == expected, nil
 	})
 
+	return err
+}
+
+// WaitVMSSVMCountToEqualNodeCount waits until the number of VMSS VMs equals the number of Nodes.
+func WaitVMSSVMCountToEqualNodeCount(tc *AzureTestClient) error {
+	cs, err := CreateKubeClientSet()
+	if err != nil {
+		return err
+	}
+
+	vmssList, _ := ListUniformVMSSes(tc)
+	vmssNames := []string{}
+	for _, vmss := range vmssList {
+		if vmss.Name == nil {
+			return fmt.Errorf("VMSS name is nil, VMSS: %v", vmss)
+		}
+		vmssNames = append(vmssNames, *vmss.Name)
+	}
+
+	err = wait.PollImmediate(vmssOperationInterval, vmssOperationTimeout, func() (bool, error) {
+		nodes, err := GetAgentNodes(cs)
+		if err != nil {
+			return false, err
+		}
+
+		vmssVMCount := 0
+		for _, vmssName := range vmssNames {
+			vms, err := ListVMSSVMs(tc, vmssName)
+			if err != nil {
+				return false, err
+			}
+			vmssVMCount += len(vms)
+		}
+		if vmssVMCount == len(nodes) {
+			return true, nil
+		}
+
+		Logf("Number of VMSS instances %d of VMSSes (%q) doesn't equal number of Nodes %d (will retry)", vmssVMCount, vmssNames, len(nodes))
+		return false, nil
+	})
 	return err
 }
 
@@ -313,6 +356,9 @@ func ListUniformVMSSes(tc *AzureTestClient) ([]azcompute.VirtualMachineScaleSet,
 	vmssUniforms := make([]azcompute.VirtualMachineScaleSet, 0)
 	for i := range res {
 		vmssUniform := res[i]
+		if IsAutoscalingAKSCluster() && vmssUniform.Name != nil && strings.Contains(*vmssUniform.Name, SystemPool) {
+			continue
+		}
 		if vmssUniform.OrchestrationMode == "" || vmssUniform.OrchestrationMode == azcompute.Uniform {
 			vmssUniforms = append(vmssUniforms, vmssUniform)
 		}

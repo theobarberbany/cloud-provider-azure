@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -224,7 +224,6 @@ func TestGetVMSetNamesVmssFlex(t *testing.T) {
 		fs.vmssFlexVMNameToVmssID.Store(testNodeName2, testVmssFlexID2)
 
 		if tc.useSingleSLB {
-			fs.EnableMultipleStandardLoadBalancers = false
 			fs.LoadBalancerSku = consts.LoadBalancerSkuStandard
 		}
 
@@ -942,8 +941,6 @@ func TestEnsureHostInPoolVmssFlex(t *testing.T) {
 		vmSetNameOfLB                  string
 		backendPoolID                  string
 		isStandardLB                   bool
-		useMultipleSLBs                bool
-		NodePoolsWithoutDedicatedSLB   string
 		testVMListWithoutInstanceView  []compute.VirtualMachine
 		testVMListWithOnlyInstanceView []compute.VirtualMachine
 		vmListErr                      error
@@ -962,7 +959,6 @@ func TestEnsureHostInPoolVmssFlex(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -980,7 +976,6 @@ func TestEnsureHostInPoolVmssFlex(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -989,61 +984,6 @@ func TestEnsureHostInPoolVmssFlex(t *testing.T) {
 			expectedNodeResourceGroup:      "",
 			expectedVMSetName:              "",
 			expectedNodeName:               "",
-			expectedErr:                    nil,
-		},
-		{
-			description:                    "EnsureHostInPool should return error if basic load balancer is used",
-			nodeName:                       "vmssflex1000001",
-			service:                        &v1.Service{},
-			vmSetNameOfLB:                  "",
-			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
-			isStandardLB:                   false,
-			useMultipleSLBs:                true,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			nic:                            network.Interface{},
-			nicGetErr:                      nil,
-			expectedNodeResourceGroup:      "",
-			expectedVMSetName:              "",
-			expectedNodeName:               "",
-			expectedErr:                    fmt.Errorf("EnsureHostInPool: VMSS Flex does not support Basic Load Balancer"),
-		},
-		{
-			description:                    "EnsureHostInPool should skip the current node if the vmSetName is not equal to the node's vmss name and multiple SLBs are used",
-			nodeName:                       "vmssflex1000001",
-			service:                        &v1.Service{},
-			vmSetNameOfLB:                  "anotherVmssFlex",
-			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
-			isStandardLB:                   true,
-			useMultipleSLBs:                true,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			nic:                            network.Interface{},
-			nicGetErr:                      nil,
-			expectedNodeResourceGroup:      "",
-			expectedVMSetName:              "",
-			expectedNodeName:               "",
-			expectedErr:                    errNotInVMSet,
-		},
-		{
-			description:                    "EnsureHostInPool should add a new backend pool to the vm if the vmss name is in the sharingPrimaryVMSetName",
-			nodeName:                       "vmssflex1000001",
-			service:                        &v1.Service{},
-			vmSetNameOfLB:                  "vmss",
-			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
-			isStandardLB:                   true,
-			useMultipleSLBs:                true,
-			NodePoolsWithoutDedicatedSLB:   "vmssflex1",
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			nic:                            generateTestNic("testvm1-nic", false, network.ProvisioningStateSucceeded, "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/testvm1"),
-			nicGetErr:                      nil,
-			expectedNodeResourceGroup:      "rg",
-			expectedVMSetName:              "vmssflex1",
-			expectedNodeName:               "vmssflex1000001",
 			expectedErr:                    nil,
 		},
 		{
@@ -1053,7 +993,6 @@ func TestEnsureHostInPoolVmssFlex(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -1071,7 +1010,6 @@ func TestEnsureHostInPoolVmssFlex(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -1089,7 +1027,6 @@ func TestEnsureHostInPoolVmssFlex(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -1108,7 +1045,6 @@ func TestEnsureHostInPoolVmssFlex(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -1127,7 +1063,6 @@ func TestEnsureHostInPoolVmssFlex(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  testBackendPoolID0,
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -1145,7 +1080,6 @@ func TestEnsureHostInPoolVmssFlex(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb2-internal/backendAddressPools/backendpool-1",
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -1164,11 +1098,6 @@ func TestEnsureHostInPoolVmssFlex(t *testing.T) {
 		if tc.isStandardLB {
 			fs.Config.LoadBalancerSku = consts.LoadBalancerSkuStandard
 		}
-
-		if tc.useMultipleSLBs {
-			fs.EnableMultipleStandardLoadBalancers = true
-		}
-		fs.NodePoolsWithoutDedicatedSLB = tc.NodePoolsWithoutDedicatedSLB
 
 		mockVMSSClient := fs.cloud.VirtualMachineScaleSetsClient.(*mockvmssclient.MockInterface)
 		mockVMSSClient.EXPECT().List(gomock.Any(), gomock.Any()).Return(testVmssFlexList, nil).AnyTimes()
@@ -1204,7 +1133,6 @@ func TestEnsureVMSSFlexInPool(t *testing.T) {
 		vmSetNameOfLB                  string
 		backendPoolID                  string
 		isStandardLB                   bool
-		useMultipleSLBs                bool
 		isVMSSDeallocating             bool
 		hasDefaultVMProfile            bool
 		testVMListWithoutInstanceView  []compute.VirtualMachine
@@ -1226,7 +1154,6 @@ func TestEnsureVMSSFlexInPool(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			hasDefaultVMProfile:            true,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
@@ -1246,28 +1173,6 @@ func TestEnsureVMSSFlexInPool(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
-			hasDefaultVMProfile:            true,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			expectedErr:                    nil,
-		},
-		{
-			description: "ensureVMSSFlexInPool should skip the node if the corresponding VMSS is deallocating",
-			nodes: []*v1.Node{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "vmssflex1000001",
-					},
-				},
-			},
-			service:                        &v1.Service{},
-			vmSetNameOfLB:                  "",
-			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
-			isStandardLB:                   true,
-			useMultipleSLBs:                false,
-			isVMSSDeallocating:             true,
 			hasDefaultVMProfile:            true,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
@@ -1287,7 +1192,6 @@ func TestEnsureVMSSFlexInPool(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			isVMSSDeallocating:             false,
 			hasDefaultVMProfile:            false,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
@@ -1308,7 +1212,6 @@ func TestEnsureVMSSFlexInPool(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  testBackendPoolID0,
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			hasDefaultVMProfile:            true,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
@@ -1328,73 +1231,11 @@ func TestEnsureVMSSFlexInPool(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb2-internal/backendAddressPools/backendpool-1",
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			hasDefaultVMProfile:            true,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
 			expectedErr:                    nil,
-		},
-		{
-			description: "ensureVMSSFlexInPool should not work for the basic load balancer",
-			nodes: []*v1.Node{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "vmssflex1000001",
-					},
-				},
-			},
-			service:                        &v1.Service{},
-			vmSetNameOfLB:                  "",
-			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
-			isStandardLB:                   false,
-			useMultipleSLBs:                true,
-			hasDefaultVMProfile:            true,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			expectedErr:                    fmt.Errorf("ensureVMSSFlexInPool: VMSS Flex does not support Basic Load Balancer"),
-		},
-		{
-			description: "ensureVMSSFlexInPool should work for multiple standard load balancers",
-			nodes: []*v1.Node{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "vmssflex1000001",
-					},
-				},
-			},
-			service:                        &v1.Service{},
-			vmSetNameOfLB:                  "vmssflex1",
-			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
-			isStandardLB:                   true,
-			useMultipleSLBs:                true,
-			hasDefaultVMProfile:            true,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			expectedErr:                    nil,
-		},
-		{
-			description: "ensureVMSSFlexInPool return error if failing to update nic",
-			nodes: []*v1.Node{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name: "vmssflex1000001",
-					},
-				},
-			},
-			service:                        &v1.Service{},
-			vmSetNameOfLB:                  "vmssflex1",
-			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
-			isStandardLB:                   true,
-			useMultipleSLBs:                true,
-			hasDefaultVMProfile:            true,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			vmssPutErr:                     &retry.Error{RawError: fmt.Errorf("failed to update nic")},
-			expectedErr:                    fmt.Errorf("Retriable: false, RetryAfter: 0s, HTTPStatusCode: 0, RawError: failed to update nic"),
 		},
 	}
 
@@ -1403,10 +1244,6 @@ func TestEnsureVMSSFlexInPool(t *testing.T) {
 		assert.NoError(t, err, "unexpected error when creating test FlexScaleSet")
 		if tc.isStandardLB {
 			fs.Config.LoadBalancerSku = consts.LoadBalancerSkuStandard
-		}
-
-		if tc.useMultipleSLBs {
-			fs.EnableMultipleStandardLoadBalancers = true
 		}
 
 		testVmssFlex := genreteTestVmssFlex("vmssflex1", testVmssFlex1ID)
@@ -1448,7 +1285,6 @@ func TestEnsureHostsInPoolVmssFlex(t *testing.T) {
 		vmSetNameOfLB                  string
 		backendPoolID                  string
 		isStandardLB                   bool
-		useMultipleSLBs                bool
 		testVMListWithoutInstanceView  []compute.VirtualMachine
 		testVMListWithOnlyInstanceView []compute.VirtualMachine
 		vmListErr                      error
@@ -1470,7 +1306,6 @@ func TestEnsureHostsInPoolVmssFlex(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -1491,7 +1326,6 @@ func TestEnsureHostsInPoolVmssFlex(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
 			isStandardLB:                   false,
-			useMultipleSLBs:                false,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -1512,7 +1346,6 @@ func TestEnsureHostsInPoolVmssFlex(t *testing.T) {
 			vmSetNameOfLB:                  "",
 			backendPoolID:                  "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/loadBalancers/lb-internal/backendAddressPools/backendpool-1",
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -1528,10 +1361,6 @@ func TestEnsureHostsInPoolVmssFlex(t *testing.T) {
 		assert.NoError(t, err, "unexpected error when creating test FlexScaleSet")
 		if tc.isStandardLB {
 			fs.Config.LoadBalancerSku = consts.LoadBalancerSkuStandard
-		}
-
-		if tc.useMultipleSLBs {
-			fs.EnableMultipleStandardLoadBalancers = true
 		}
 
 		mockVMSSClient := fs.cloud.VirtualMachineScaleSetsClient.(*mockvmssclient.MockInterface)
@@ -1624,7 +1453,7 @@ func TestEnsureBackendPoolDeletedFromVMSetsVmssFlex(t *testing.T) {
 			hasDefaultVMProfile:  true,
 			isNicConfigEmpty:     true,
 			vmssListCallingTimes: 1,
-			expectedErr:          fmt.Errorf("failed to find a primary network configuration for the scale set \"vmssflex1\""),
+			expectedErr:          fmt.Errorf("failed to find a primary network configuration for the VMSS VM or VMSS \"vmssflex1\""),
 		},
 		{
 			description: "EnsureBackendPoolDeletedFromVMSets should skip the vmss has empty IP config",
@@ -1637,7 +1466,7 @@ func TestEnsureBackendPoolDeletedFromVMSetsVmssFlex(t *testing.T) {
 			isNicConfigEmpty:     false,
 			isIPConfigEmpty:      true,
 			vmssListCallingTimes: 1,
-			expectedErr:          fmt.Errorf("failed to find a primary IP configuration"),
+			expectedErr:          fmt.Errorf("failed to find a primary IP configuration (IPv6=false) for the VMSS VM or VMSS \"vmssflex1\""),
 		},
 		{
 			description: "EnsureBackendPoolDeletedFromVMSets should skip the vmss if the backend pool is not in the vmss's backend pool list",
@@ -1663,41 +1492,42 @@ func TestEnsureBackendPoolDeletedFromVMSetsVmssFlex(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		fs, err := NewTestFlexScaleSet(ctrl)
-		assert.NoError(t, err, "unexpected error when creating test FlexScaleSet")
+		t.Run(tc.description, func(t *testing.T) {
+			fs, err := NewTestFlexScaleSet(ctrl)
+			assert.NoError(t, err, "unexpected error when creating test FlexScaleSet")
 
-		testVmssFlex := genreteTestVmssFlex("vmssflex1", testVmssFlex1ID)
+			testVmssFlex := genreteTestVmssFlex("vmssflex1", testVmssFlex1ID)
 
-		if tc.isVMSSDeallocating {
-			testVmssFlex.ProvisioningState = pointer.String(consts.VirtualMachineScaleSetsDeallocating)
-		}
-		if !tc.hasDefaultVMProfile {
-			testVmssFlex.VirtualMachineProfile = nil
-		}
-		if tc.isNicConfigEmpty {
-			testVmssFlex.VirtualMachineProfile.NetworkProfile.NetworkInterfaceConfigurations = &[]compute.VirtualMachineScaleSetNetworkConfiguration{}
-		}
-		if tc.isIPConfigEmpty {
-			(*testVmssFlex.VirtualMachineProfile.NetworkProfile.NetworkInterfaceConfigurations)[0].IPConfigurations = &[]compute.VirtualMachineScaleSetIPConfiguration{}
-		}
+			if tc.isVMSSDeallocating {
+				testVmssFlex.ProvisioningState = pointer.String(consts.VirtualMachineScaleSetsDeallocating)
+			}
+			if !tc.hasDefaultVMProfile {
+				testVmssFlex.VirtualMachineProfile = nil
+			}
+			if tc.isNicConfigEmpty {
+				testVmssFlex.VirtualMachineProfile.NetworkProfile.NetworkInterfaceConfigurations = &[]compute.VirtualMachineScaleSetNetworkConfiguration{}
+			}
+			if tc.isIPConfigEmpty {
+				(*testVmssFlex.VirtualMachineProfile.NetworkProfile.NetworkInterfaceConfigurations)[0].IPConfigurations = &[]compute.VirtualMachineScaleSetIPConfiguration{}
+			}
 
-		vmssFlexList := []compute.VirtualMachineScaleSet{testVmssFlex}
+			vmssFlexList := []compute.VirtualMachineScaleSet{testVmssFlex}
 
-		mockVMSSClient := fs.cloud.VirtualMachineScaleSetsClient.(*mockvmssclient.MockInterface)
-		mockVMSSClient.EXPECT().List(gomock.Any(), gomock.Any()).Return(vmssFlexList, nil).Times(tc.vmssListCallingTimes)
-		mockVMSSClient.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any()).Return(testVmssFlex1, nil).AnyTimes()
-		mockVMSSClient.EXPECT().CreateOrUpdate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.vmssPutErr).AnyTimes()
+			mockVMSSClient := fs.cloud.VirtualMachineScaleSetsClient.(*mockvmssclient.MockInterface)
+			mockVMSSClient.EXPECT().List(gomock.Any(), gomock.Any()).Return(vmssFlexList, nil).Times(tc.vmssListCallingTimes)
+			mockVMSSClient.EXPECT().Get(gomock.Any(), gomock.Any(), gomock.Any()).Return(testVmssFlex1, nil).AnyTimes()
+			mockVMSSClient.EXPECT().CreateOrUpdate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(tc.vmssPutErr).AnyTimes()
 
-		err = fs.EnsureBackendPoolDeletedFromVMSets(tc.vmssNamesMap, []string{tc.backendPoolID})
-		_, _ = fs.getVmssFlexByName("vmssflex1")
+			err = fs.EnsureBackendPoolDeletedFromVMSets(tc.vmssNamesMap, []string{tc.backendPoolID})
+			_, _ = fs.getVmssFlexByName("vmssflex1")
 
-		if tc.expectedErr != nil {
-			assert.EqualError(t, err, tc.expectedErr.Error(), tc.description)
-		} else {
-			assert.NoError(t, err, tc.description)
-		}
+			if tc.expectedErr != nil {
+				assert.EqualError(t, err, tc.expectedErr.Error())
+			} else {
+				assert.NoError(t, err)
+			}
+		})
 	}
-
 }
 
 func TestEnsureBackendPoolDeletedFromNodeVmssFlex(t *testing.T) {
@@ -1794,7 +1624,6 @@ func TestEnsureBackendPoolDeletedVmssFlex(t *testing.T) {
 		backendAddressPools *[]network.BackendAddressPool
 		deleteFromVMSet     bool
 		isStandardLB        bool
-		useMultipleSLBs     bool
 
 		testVMListWithoutInstanceView  []compute.VirtualMachine
 		testVMListWithOnlyInstanceView []compute.VirtualMachine
@@ -1814,7 +1643,6 @@ func TestEnsureBackendPoolDeletedVmssFlex(t *testing.T) {
 			backendAddressPools:            testBackendPools,
 			deleteFromVMSet:                true,
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -1830,39 +1658,6 @@ func TestEnsureBackendPoolDeletedVmssFlex(t *testing.T) {
 			backendAddressPools:            nil,
 			deleteFromVMSet:                true,
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			nic:                            generateTestNic("testvm1-nic", false, network.ProvisioningStateSucceeded, "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/testvm1"),
-			nicGetErr:                      nil,
-			expectedErr:                    nil,
-		},
-		{
-			description:                    "EnsureBackendPoolDeleted should delete a backend pool if the VMSetName matches nic's vmss",
-			service:                        &v1.Service{},
-			vmSetName:                      "vmssflex1",
-			backendPoolID:                  testBackendPoolID0,
-			backendAddressPools:            testBackendPools,
-			deleteFromVMSet:                true,
-			isStandardLB:                   true,
-			useMultipleSLBs:                true,
-			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
-			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
-			vmListErr:                      nil,
-			nic:                            generateTestNic("testvm1-nic", false, network.ProvisioningStateSucceeded, "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/testvm1"),
-			nicGetErr:                      nil,
-			expectedErr:                    nil,
-		},
-		{
-			description:                    "EnsureBackendPoolDeleted should do nothing if the VMSetName does not match nic's vmss",
-			service:                        &v1.Service{},
-			vmSetName:                      "vmssflex2",
-			backendPoolID:                  testBackendPoolID0,
-			backendAddressPools:            testBackendPools,
-			deleteFromVMSet:                true,
-			isStandardLB:                   true,
-			useMultipleSLBs:                true,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -1878,7 +1673,6 @@ func TestEnsureBackendPoolDeletedVmssFlex(t *testing.T) {
 			backendAddressPools:            testBackendPools,
 			deleteFromVMSet:                true,
 			isStandardLB:                   true,
-			useMultipleSLBs:                false,
 			testVMListWithoutInstanceView:  testVMListWithoutInstanceView,
 			testVMListWithOnlyInstanceView: testVMListWithOnlyInstanceView,
 			vmListErr:                      nil,
@@ -1894,10 +1688,6 @@ func TestEnsureBackendPoolDeletedVmssFlex(t *testing.T) {
 		assert.NoError(t, err, "unexpected error when creating test FlexScaleSet")
 		if tc.isStandardLB {
 			fs.Config.LoadBalancerSku = consts.LoadBalancerSkuStandard
-		}
-
-		if tc.useMultipleSLBs {
-			fs.EnableMultipleStandardLoadBalancers = true
 		}
 
 		testVmssFlex := genreteTestVmssFlex("vmssflex1", testVmssFlex1ID)

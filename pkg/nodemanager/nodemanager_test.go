@@ -411,9 +411,9 @@ func TestZoneInitialized(t *testing.T) {
 		assert.Equal(t, "node0", fnh.UpdatedNodes[0].Name, "Node was not updated")
 		assert.Equal(t, 3, len(fnh.UpdatedNodes[0].ObjectMeta.Labels),
 			"Node label for Region and Zone were not set")
-		assert.Equal(t, "eastus", fnh.UpdatedNodes[0].ObjectMeta.Labels[v1.LabelTopologyRegion],
+		assert.Equal(t, "eastus", fnh.UpdatedNodes[0].ObjectMeta.Labels[v1.LabelZoneRegionStable],
 			"Node Region not correctly updated")
-		assert.Equal(t, "eastus-1", fnh.UpdatedNodes[0].ObjectMeta.Labels[v1.LabelTopologyZone],
+		assert.Equal(t, "eastus-1", fnh.UpdatedNodes[0].ObjectMeta.Labels[v1.LabelZoneFailureDomainStable],
 			"Node FailureDomain not correctly updated")
 	})
 
@@ -493,13 +493,13 @@ func TestZoneInitialized(t *testing.T) {
 		assert.Equal(t, "node0", fnh.UpdatedNodes[0].Name, "Node was not updated")
 		assert.Equal(t, 6, len(fnh.UpdatedNodes[0].ObjectMeta.Labels),
 			"Node label for Region and Zone were not set")
-		assert.Equal(t, "eastus", fnh.UpdatedNodes[0].ObjectMeta.Labels[v1.LabelTopologyRegion],
+		assert.Equal(t, "eastus", fnh.UpdatedNodes[0].ObjectMeta.Labels[v1.LabelZoneRegionStable],
 			"Node Region not correctly updated")
-		assert.Equal(t, "eastus-1", fnh.UpdatedNodes[0].ObjectMeta.Labels[v1.LabelTopologyZone],
+		assert.Equal(t, "eastus-1", fnh.UpdatedNodes[0].ObjectMeta.Labels[v1.LabelZoneFailureDomainStable],
 			"Node FailureDomain not correctly updated")
-		assert.Equal(t, "eastus", fnh.UpdatedNodes[0].ObjectMeta.Labels[v1.LabelFailureDomainBetaRegion],
+		assert.Equal(t, "eastus", fnh.UpdatedNodes[0].ObjectMeta.Labels[v1.LabelZoneRegion],
 			"Node Region not correctly updated")
-		assert.Equal(t, "eastus-1", fnh.UpdatedNodes[0].ObjectMeta.Labels[v1.LabelFailureDomainBetaZone],
+		assert.Equal(t, "eastus-1", fnh.UpdatedNodes[0].ObjectMeta.Labels[v1.LabelZoneFailureDomain],
 			"Node FailureDomain not correctly updated")
 	})
 }
@@ -775,15 +775,15 @@ func Test_reconcileNodeLabels(t *testing.T) {
 		{
 			name: "requires reconcile",
 			labels: map[string]string{
-				v1.LabelTopologyZone:       "foo",
-				v1.LabelTopologyRegion:     "bar",
-				v1.LabelInstanceTypeStable: "the-best-type",
+				v1.LabelZoneFailureDomainStable: "foo",
+				v1.LabelZoneRegionStable:        "bar",
+				v1.LabelInstanceTypeStable:      "the-best-type",
 			},
 			expectedLabels: map[string]string{
-				v1.LabelFailureDomainBetaZone:   "foo",
-				v1.LabelFailureDomainBetaRegion: "bar",
-				v1.LabelTopologyZone:            "foo",
-				v1.LabelTopologyRegion:          "bar",
+				v1.LabelZoneFailureDomain:       "foo",
+				v1.LabelZoneRegion:              "bar",
+				v1.LabelZoneFailureDomainStable: "foo",
+				v1.LabelZoneRegionStable:        "bar",
 				v1.LabelInstanceType:            "the-best-type",
 				v1.LabelInstanceTypeStable:      "the-best-type",
 			},
@@ -792,18 +792,18 @@ func Test_reconcileNodeLabels(t *testing.T) {
 		{
 			name: "doesn't require reconcile",
 			labels: map[string]string{
-				v1.LabelFailureDomainBetaZone:   "foo",
-				v1.LabelFailureDomainBetaRegion: "bar",
-				v1.LabelTopologyZone:            "foo",
-				v1.LabelTopologyRegion:          "bar",
+				v1.LabelZoneFailureDomain:       "foo",
+				v1.LabelZoneRegion:              "bar",
+				v1.LabelZoneFailureDomainStable: "foo",
+				v1.LabelZoneRegionStable:        "bar",
 				v1.LabelInstanceType:            "the-best-type",
 				v1.LabelInstanceTypeStable:      "the-best-type",
 			},
 			expectedLabels: map[string]string{
-				v1.LabelFailureDomainBetaZone:   "foo",
-				v1.LabelFailureDomainBetaRegion: "bar",
-				v1.LabelTopologyZone:            "foo",
-				v1.LabelTopologyRegion:          "bar",
+				v1.LabelZoneFailureDomain:       "foo",
+				v1.LabelZoneRegion:              "bar",
+				v1.LabelZoneFailureDomainStable: "foo",
+				v1.LabelZoneRegionStable:        "bar",
 				v1.LabelInstanceType:            "the-best-type",
 				v1.LabelInstanceTypeStable:      "the-best-type",
 			},
@@ -812,18 +812,18 @@ func Test_reconcileNodeLabels(t *testing.T) {
 		{
 			name: "require reconcile -- secondary labels are different from primary",
 			labels: map[string]string{
-				v1.LabelTopologyZone:            "foo",
-				v1.LabelTopologyRegion:          "bar",
-				v1.LabelFailureDomainBetaZone:   "wrongfoo",
-				v1.LabelFailureDomainBetaRegion: "wrongbar",
+				v1.LabelZoneFailureDomainStable: "foo",
+				v1.LabelZoneRegionStable:        "bar",
+				v1.LabelZoneFailureDomain:       "wrongfoo",
+				v1.LabelZoneRegion:              "wrongbar",
 				v1.LabelInstanceTypeStable:      "the-best-type",
 				v1.LabelInstanceType:            "the-wrong-type",
 			},
 			expectedLabels: map[string]string{
-				v1.LabelFailureDomainBetaZone:   "foo",
-				v1.LabelFailureDomainBetaRegion: "bar",
-				v1.LabelTopologyZone:            "foo",
-				v1.LabelTopologyRegion:          "bar",
+				v1.LabelZoneFailureDomain:       "foo",
+				v1.LabelZoneRegion:              "bar",
+				v1.LabelZoneFailureDomainStable: "foo",
+				v1.LabelZoneRegionStable:        "bar",
 				v1.LabelInstanceType:            "the-best-type",
 				v1.LabelInstanceTypeStable:      "the-best-type",
 			},

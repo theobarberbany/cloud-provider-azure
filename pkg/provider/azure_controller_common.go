@@ -27,7 +27,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/go-autorest/autorest/azure"
 
 	"k8s.io/apimachinery/pkg/types"
@@ -333,7 +333,7 @@ func (c *controllerCommon) waitForUpdateResult(ctx context.Context, vmset VMSet,
 	}
 
 	if vmUpdateRequired(future, err) {
-		if derr := kwait.ExponentialBackoffWithContext(ctx, updateVMBackoff, func() (bool, error) {
+		if derr := kwait.ExponentialBackoffWithContext(ctx, updateVMBackoff, func(ctx context.Context) (bool, error) {
 			klog.Errorf("Retry VM Update on node (%s) due to error (%v)", nodeName, err)
 			future, err = vmset.UpdateVMAsync(ctx, nodeName)
 			if err == nil {
@@ -724,14 +724,15 @@ func vmUpdateRequired(future *azure.Future, err error) bool {
 	return configAccepted(future) && errCode == consts.OperationPreemptedErrorCode
 }
 
-func getValidCreationData(subscriptionID, resourceGroup, sourceResourceID, sourceType string) (compute.CreationData, error) {
-	if sourceResourceID == "" {
+func getValidCreationData(subscriptionID, resourceGroup string, options *ManagedDiskOptions) (compute.CreationData, error) {
+	if options.SourceResourceID == "" {
 		return compute.CreationData{
 			CreateOption: compute.Empty,
 		}, nil
 	}
 
-	switch sourceType {
+	sourceResourceID := options.SourceResourceID
+	switch options.SourceType {
 	case sourceSnapshot:
 		if match := diskSnapshotPathRE.FindString(sourceResourceID); match == "" {
 			sourceResourceID = fmt.Sprintf(diskSnapshotPath, subscriptionID, resourceGroup, sourceResourceID)
@@ -749,7 +750,7 @@ func getValidCreationData(subscriptionID, resourceGroup, sourceResourceID, sourc
 
 	splits := strings.Split(sourceResourceID, "/")
 	if len(splits) > 9 {
-		if sourceType == sourceSnapshot {
+		if options.SourceType == sourceSnapshot {
 			return compute.CreationData{}, fmt.Errorf("sourceResourceID(%s) is invalid, correct format: %s", sourceResourceID, diskSnapshotPathRE)
 		}
 		return compute.CreationData{}, fmt.Errorf("sourceResourceID(%s) is invalid, correct format: %s", sourceResourceID, managedDiskPathRE)
@@ -757,6 +758,7 @@ func getValidCreationData(subscriptionID, resourceGroup, sourceResourceID, sourc
 	return compute.CreationData{
 		CreateOption:     compute.Copy,
 		SourceResourceID: &sourceResourceID,
+		PerformancePlus:  options.PerformancePlus,
 	}, nil
 }
 

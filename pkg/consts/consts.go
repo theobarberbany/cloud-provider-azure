@@ -19,7 +19,6 @@ package consts
 import (
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2021-09-01/storage"
 )
 
@@ -128,8 +127,10 @@ const (
 	TagKeyValueDelimiter = "="
 	// VMSetNamesSharingPrimarySLBDelimiter is the delimiter of vmSet names sharing the primary SLB
 	VMSetNamesSharingPrimarySLBDelimiter = ","
-	// PremiumV2_LRS type for Azure Disk
-	PremiumV2LRS = compute.DiskStorageAccountTypes("PremiumV2_LRS")
+	// ProvisioningStateDeleting ...
+	ProvisioningStateDeleting = "Deleting"
+	// ProvisioningStateSucceeded ...
+	ProvisioningStateSucceeded = "Succeeded"
 )
 
 // cache
@@ -201,21 +202,20 @@ var (
 		false: "service.beta.kubernetes.io/azure-load-balancer-ipv4",
 		true:  "service.beta.kubernetes.io/azure-load-balancer-ipv6",
 	}
+	// ServiceAnnotationPIPName specifies the pip that will be applied to load balancer
 	ServiceAnnotationPIPNameDualStack = map[bool]string{
-		false: "service.beta.kubernetes.io/azure-pip-name-ipv4",
+		false: "service.beta.kubernetes.io/azure-pip-name",
 		true:  "service.beta.kubernetes.io/azure-pip-name-ipv6",
 	}
+	// ServiceAnnotationPIPPrefixID specifies the pip prefix that will be applied to the load balancer.
 	ServiceAnnotationPIPPrefixIDDualStack = map[bool]string{
-		false: "service.beta.kubernetes.io/azure-pip-prefix-id-ipv4",
+		false: "service.beta.kubernetes.io/azure-pip-prefix-id",
 		true:  "service.beta.kubernetes.io/azure-pip-prefix-id-ipv6",
 	}
 )
 
 // load balancer
 const (
-	// TODO: After dual-stack is supported, all references should be updated and this variable is not needed.
-	DualstackSupported = false
-
 	// PreConfiguredBackendPoolLoadBalancerTypesInternal means that the `internal` load balancers are pre-configured
 	PreConfiguredBackendPoolLoadBalancerTypesInternal = "internal"
 	// PreConfiguredBackendPoolLoadBalancerTypesExternal means that the `external` load balancers are pre-configured
@@ -268,12 +268,6 @@ const (
 	// ServiceAnnotationLoadBalancerResourceGroup is the annotation used on the service
 	// to specify the resource group of load balancer objects that are not in the same resource group as the cluster.
 	ServiceAnnotationLoadBalancerResourceGroup = "service.beta.kubernetes.io/azure-load-balancer-resource-group"
-
-	// ServiceAnnotationPIPName specifies the pip that will be applied to load balancer
-	ServiceAnnotationPIPName = "service.beta.kubernetes.io/azure-pip-name"
-
-	// ServiceAnnotationPIPPrefixID specifies the pip prefix that will be applied to the load balancer.
-	ServiceAnnotationPIPPrefixID = "service.beta.kubernetes.io/azure-pip-prefix-id"
 
 	// ServiceAnnotationIPTagsForPublicIP specifies the iptags used when dynamically creating a public ip
 	ServiceAnnotationIPTagsForPublicIP = "service.beta.kubernetes.io/azure-pip-ip-tags"

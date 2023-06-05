@@ -22,11 +22,12 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
@@ -111,13 +112,11 @@ func TestAddPort(t *testing.T) {
 	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, false)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	// ensure we got a frontend ip configuration
 	if len(*lb.FrontendIPConfigurations) != 1 {
@@ -143,6 +142,27 @@ func TestLoadBalancerExternalServiceModeSelection(t *testing.T) {
 	testLoadBalancerServiceAutoModeDeleteSelection(t, false)
 }
 
+func setMockEnvDualStack(az *Cloud, ctrl *gomock.Controller, expectedInterfaces []network.Interface, expectedVirtualMachines []compute.VirtualMachine, serviceCount int) {
+	mockInterfacesClient := mockinterfaceclient.NewMockInterface(ctrl)
+	az.InterfacesClient = mockInterfacesClient
+	for i := range expectedInterfaces {
+		mockInterfacesClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, fmt.Sprintf("vm-%d", i), gomock.Any()).Return(expectedInterfaces[i], nil).AnyTimes()
+		mockInterfacesClient.EXPECT().CreateOrUpdate(gomock.Any(), az.ResourceGroup, fmt.Sprintf("vm-%d", i), gomock.Any()).Return(nil).AnyTimes()
+	}
+
+	mockVirtualMachinesClient := mockvmclient.NewMockInterface(ctrl)
+	az.VirtualMachinesClient = mockVirtualMachinesClient
+	mockVirtualMachinesClient.EXPECT().List(gomock.Any(), az.ResourceGroup).Return(expectedVirtualMachines, nil).AnyTimes()
+	for i := range expectedVirtualMachines {
+		mockVirtualMachinesClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, fmt.Sprintf("vm-%d", i), gomock.Any()).Return(expectedVirtualMachines[i], nil).AnyTimes()
+	}
+
+	setMockPublicIPs(az, ctrl, serviceCount, true, true)
+
+	sg := getTestSecurityGroup(az)
+	setMockSecurityGroup(az, ctrl, sg)
+}
+
 func setMockEnv(az *Cloud, ctrl *gomock.Controller, expectedInterfaces []network.Interface, expectedVirtualMachines []compute.VirtualMachine, serviceCount int, services ...v1.Service) {
 	mockInterfacesClient := mockinterfaceclient.NewMockInterface(ctrl)
 	az.InterfacesClient = mockInterfacesClient
@@ -158,20 +178,57 @@ func setMockEnv(az *Cloud, ctrl *gomock.Controller, expectedInterfaces []network
 		mockVirtualMachinesClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, fmt.Sprintf("vm-%d", i), gomock.Any()).Return(expectedVirtualMachines[i], nil).AnyTimes()
 	}
 
-	setMockPublicIPs(az, ctrl, serviceCount)
+	if len(services) > 0 {
+		v4Enabled, v6Enabled := getIPFamiliesEnabled(&services[0])
+		setMockPublicIPs(az, ctrl, serviceCount, v4Enabled, v6Enabled)
+	} else {
+		// Default is IPv4 only.
+		setMockPublicIPs(az, ctrl, serviceCount, true, false)
+	}
 
 	sg := getTestSecurityGroup(az, services...)
 	setMockSecurityGroup(az, ctrl, sg)
 }
 
-func setMockPublicIPs(az *Cloud, ctrl *gomock.Controller, serviceCount int) {
+func setMockPublicIPs(az *Cloud, ctrl *gomock.Controller, serviceCount int, v4Enabled, v6Enabled bool) {
+	mockPIPsClient := mockpublicipclient.NewMockInterface(ctrl)
+
+	expectedPIPsTotal := []network.PublicIPAddress{}
+	if v4Enabled {
+		expectedPIPs := setMockPublicIP(az, mockPIPsClient, serviceCount, false)
+		expectedPIPsTotal = append(expectedPIPsTotal, expectedPIPs...)
+	}
+	if v6Enabled {
+		expectedPIPs := setMockPublicIP(az, mockPIPsClient, serviceCount, true)
+		expectedPIPsTotal = append(expectedPIPsTotal, expectedPIPs...)
+	}
+	mockPIPsClient.EXPECT().List(gomock.Any(), az.ResourceGroup).Return(expectedPIPsTotal, nil).AnyTimes()
+
+	az.PublicIPAddressesClient = mockPIPsClient
+	mockPIPsClient.EXPECT().CreateOrUpdate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	mockPIPsClient.EXPECT().List(gomock.Any(), gomock.Not(az.ResourceGroup)).Return(nil, nil).AnyTimes()
+	mockPIPsClient.EXPECT().Get(gomock.Any(), gomock.Not(az.ResourceGroup), gomock.Any(), gomock.Any()).Return(network.PublicIPAddress{}, &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound}).AnyTimes()
+}
+
+func setMockPublicIP(az *Cloud, mockPIPsClient *mockpublicipclient.MockInterface, serviceCount int, isIPv6 bool) []network.PublicIPAddress {
+	suffix := ""
+	ipVer := network.IPv4
+	ipAddr1 := "1.2.3.4"
+	ipAddra := "1.2.3.5"
+	if isIPv6 {
+		suffix = "-" + v6Suffix
+		ipVer = network.IPv6
+		ipAddr1 = "fd00::eef0"
+		ipAddra = "fd00::eef1"
+	}
+
 	expectedPIP := network.PublicIPAddress{
 		Name:     pointer.String("testCluster-aservicea"),
 		Location: &az.Location,
 		PublicIPAddressPropertiesFormat: &network.PublicIPAddressPropertiesFormat{
 			PublicIPAllocationMethod: network.Static,
-			PublicIPAddressVersion:   network.IPv4,
-			IPAddress:                pointer.String("1.2.3.4"),
+			PublicIPAddressVersion:   ipVer,
+			IPAddress:                pointer.String(ipAddr1),
 		},
 		Tags: map[string]*string{
 			consts.ServiceTagKey:  pointer.String("default/servicea"),
@@ -183,28 +240,34 @@ func setMockPublicIPs(az *Cloud, ctrl *gomock.Controller, serviceCount int) {
 		ID: pointer.String("testCluster-aservice1"),
 	}
 
-	mockPIPsClient := mockpublicipclient.NewMockInterface(ctrl)
-	az.PublicIPAddressesClient = mockPIPsClient
-	mockPIPsClient.EXPECT().CreateOrUpdate(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-	mockPIPsClient.EXPECT().List(gomock.Any(), gomock.Not(az.ResourceGroup)).Return(nil, nil).AnyTimes()
-	mockPIPsClient.EXPECT().Get(gomock.Any(), gomock.Not(az.ResourceGroup), gomock.Any(), gomock.Any()).Return(network.PublicIPAddress{}, &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound}).AnyTimes()
-
 	a := 'a'
 	var expectedPIPs []network.PublicIPAddress
 	for i := 1; i <= serviceCount; i++ {
-		expectedPIP.Name = pointer.String(fmt.Sprintf("testCluster-aservice%d", i))
+		expectedPIP.Name = pointer.String(fmt.Sprintf("testCluster-aservice%d%s", i, suffix))
+		expectedPIP.ID = pointer.String(fmt.Sprintf("testCluster-aservice%d%s", i, suffix))
+		expectedPIP.PublicIPAddressPropertiesFormat = &network.PublicIPAddressPropertiesFormat{
+			PublicIPAllocationMethod: network.Static,
+			PublicIPAddressVersion:   ipVer,
+			IPAddress:                pointer.String(ipAddr1),
+		}
 		expectedPIP.Tags[consts.ServiceTagKey] = pointer.String(fmt.Sprintf("default/service%d", i))
-		mockPIPsClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, fmt.Sprintf("testCluster-aservice%d", i), gomock.Any()).Return(expectedPIP, nil).AnyTimes()
-		mockPIPsClient.EXPECT().Delete(gomock.Any(), az.ResourceGroup, fmt.Sprintf("testCluster-aservice%d", i)).Return(nil).AnyTimes()
+		mockPIPsClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, fmt.Sprintf("testCluster-aservice%d%s", i, suffix), gomock.Any()).Return(expectedPIP, nil).AnyTimes()
+		mockPIPsClient.EXPECT().Delete(gomock.Any(), az.ResourceGroup, fmt.Sprintf("testCluster-aservice%d%s", i, suffix)).Return(nil).AnyTimes()
 		expectedPIPs = append(expectedPIPs, expectedPIP)
-		expectedPIP.Name = pointer.String(fmt.Sprintf("testCluster-aservice%c", a))
+		expectedPIP.Name = pointer.String(fmt.Sprintf("testCluster-aservice%c%s", a, suffix))
+		expectedPIP.ID = pointer.String(fmt.Sprintf("testCluster-aservice%c%s", a, suffix))
+		expectedPIP.PublicIPAddressPropertiesFormat = &network.PublicIPAddressPropertiesFormat{
+			PublicIPAllocationMethod: network.Static,
+			PublicIPAddressVersion:   ipVer,
+			IPAddress:                pointer.String(ipAddra),
+		}
 		expectedPIP.Tags[consts.ServiceTagKey] = pointer.String(fmt.Sprintf("default/service%c", a))
-		mockPIPsClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, fmt.Sprintf("testCluster-aservice%c", a), gomock.Any()).Return(expectedPIP, nil).AnyTimes()
-		mockPIPsClient.EXPECT().Delete(gomock.Any(), az.ResourceGroup, fmt.Sprintf("testCluster-aservice%c", a)).Return(nil).AnyTimes()
+		mockPIPsClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, fmt.Sprintf("testCluster-aservice%c%s", a, suffix), gomock.Any()).Return(expectedPIP, nil).AnyTimes()
+		mockPIPsClient.EXPECT().Delete(gomock.Any(), az.ResourceGroup, fmt.Sprintf("testCluster-aservice%c%s", a, suffix)).Return(nil).AnyTimes()
 		expectedPIPs = append(expectedPIPs, expectedPIP)
 		a++
 	}
-	mockPIPsClient.EXPECT().List(gomock.Any(), az.ResourceGroup).Return(expectedPIPs, nil).AnyTimes()
+	return expectedPIPs
 }
 
 func setMockSecurityGroup(az *Cloud, ctrl *gomock.Controller, sgs ...*network.SecurityGroup) {
@@ -214,6 +277,122 @@ func setMockSecurityGroup(az *Cloud, ctrl *gomock.Controller, sgs ...*network.Se
 		mockSGsClient.EXPECT().Get(gomock.Any(), az.SecurityGroupResourceGroup, az.SecurityGroupName, gomock.Any()).Return(*sg, nil).AnyTimes()
 	}
 	mockSGsClient.EXPECT().CreateOrUpdate(gomock.Any(), az.SecurityGroupResourceGroup, az.SecurityGroupName, gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+}
+
+func setMockLBsDualStack(az *Cloud, ctrl *gomock.Controller, expectedLBs *[]network.LoadBalancer, svcName string, lbCount, serviceIndex int, isInternal bool) string {
+	lbIndex := (serviceIndex - 1) % lbCount
+	expectedLBName := ""
+	if lbIndex == 0 {
+		expectedLBName = testClusterName
+	} else {
+		expectedLBName = fmt.Sprintf("as-%d", lbIndex)
+	}
+	if isInternal {
+		expectedLBName += "-internal"
+	}
+
+	fullServiceName := strings.Replace(svcName, "-", "", -1)
+
+	if lbIndex >= len(*expectedLBs) {
+		lb := network.LoadBalancer{
+			Location: &az.Location,
+			LoadBalancerPropertiesFormat: &network.LoadBalancerPropertiesFormat{
+				BackendAddressPools: &[]network.BackendAddressPool{
+					{
+						Name: pointer.String("testCluster"),
+					},
+					{
+						Name: pointer.String("testCluster-IPv6"),
+					},
+				},
+			},
+		}
+		lb.Name = &expectedLBName
+		lb.LoadBalancingRules = &[]network.LoadBalancingRule{
+			{
+				Name: pointer.String(fmt.Sprintf("a%s%d-TCP-8081", fullServiceName, serviceIndex)),
+			},
+			{
+				Name: pointer.String(fmt.Sprintf("a%s%d-TCP-8081-IPv6", fullServiceName, serviceIndex)),
+			},
+		}
+		fips := []network.FrontendIPConfiguration{
+			{
+				Name: pointer.String(fmt.Sprintf("a%s%d", fullServiceName, serviceIndex)),
+				ID:   pointer.String("fip"),
+				FrontendIPConfigurationPropertiesFormat: &network.FrontendIPConfigurationPropertiesFormat{
+					PrivateIPAllocationMethod: "Dynamic",
+					PrivateIPAddressVersion:   network.IPv4,
+					PublicIPAddress:           &network.PublicIPAddress{ID: pointer.String(fmt.Sprintf("testCluster-a%s%d", fullServiceName, serviceIndex))},
+				},
+			},
+			{
+				Name: pointer.String(fmt.Sprintf("a%s%d-IPv6", fullServiceName, serviceIndex)),
+				ID:   pointer.String("fip-IPv6"),
+				FrontendIPConfigurationPropertiesFormat: &network.FrontendIPConfigurationPropertiesFormat{
+					PrivateIPAllocationMethod: "Dynamic",
+					PrivateIPAddressVersion:   network.IPv6,
+					PublicIPAddress:           &network.PublicIPAddress{ID: pointer.String(fmt.Sprintf("testCluster-a%s%d-IPv6", fullServiceName, serviceIndex))},
+				},
+			},
+		}
+		if isInternal {
+			fips[0].Subnet = &network.Subnet{Name: pointer.String("subnet")}
+			fips[1].Subnet = &network.Subnet{Name: pointer.String("subnet")}
+		}
+		lb.FrontendIPConfigurations = &fips
+
+		*expectedLBs = append(*expectedLBs, lb)
+	} else {
+		lbRules := []network.LoadBalancingRule{
+			{
+				Name: pointer.String(fmt.Sprintf("a%s%d-TCP-8081", fullServiceName, serviceIndex)),
+			},
+			{
+				Name: pointer.String(fmt.Sprintf("a%s%d-TCP-8081-IPv6", fullServiceName, serviceIndex)),
+			},
+		}
+		*(*expectedLBs)[lbIndex].LoadBalancingRules = append(*(*expectedLBs)[lbIndex].LoadBalancingRules, lbRules...)
+		fips := []network.FrontendIPConfiguration{
+			{
+				Name: pointer.String(fmt.Sprintf("a%s%d", fullServiceName, serviceIndex)),
+				ID:   pointer.String("fip"),
+				FrontendIPConfigurationPropertiesFormat: &network.FrontendIPConfigurationPropertiesFormat{
+					PrivateIPAllocationMethod: "Dynamic",
+					PrivateIPAddressVersion:   network.IPv4,
+					PublicIPAddress:           &network.PublicIPAddress{ID: pointer.String(fmt.Sprintf("testCluster-a%s%d", fullServiceName, serviceIndex))},
+				},
+			},
+			{
+				Name: pointer.String(fmt.Sprintf("a%s%d-IPv6", fullServiceName, serviceIndex)),
+				ID:   pointer.String("fip-IPv6"),
+				FrontendIPConfigurationPropertiesFormat: &network.FrontendIPConfigurationPropertiesFormat{
+					PrivateIPAllocationMethod: "Dynamic",
+					PrivateIPAddressVersion:   network.IPv6,
+					PublicIPAddress:           &network.PublicIPAddress{ID: pointer.String(fmt.Sprintf("testCluster-a%s%d-IPv6", fullServiceName, serviceIndex))},
+				},
+			},
+		}
+		if isInternal {
+			for _, fip := range fips {
+				fip.Subnet = &network.Subnet{Name: pointer.String("subnet")}
+			}
+		}
+		*(*expectedLBs)[lbIndex].FrontendIPConfigurations = append(*(*expectedLBs)[lbIndex].FrontendIPConfigurations, fips...)
+	}
+
+	mockLBsClient := mockloadbalancerclient.NewMockInterface(ctrl)
+	az.LoadBalancerClient = mockLBsClient
+	mockLBsClient.EXPECT().CreateOrUpdate(gomock.Any(), az.ResourceGroup, gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	for _, lb := range *expectedLBs {
+		mockLBsClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, *lb.Name, gomock.Any()).Return((*expectedLBs)[lbIndex], nil).MaxTimes(2)
+	}
+	mockLBsClient.EXPECT().List(gomock.Any(), az.ResourceGroup).Return(*expectedLBs, nil).MaxTimes(4)
+	mockLBsClient.EXPECT().List(gomock.Any(), gomock.Not(az.ResourceGroup)).Return([]network.LoadBalancer{}, &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound}).AnyTimes()
+	mockLBsClient.EXPECT().Get(gomock.Any(), gomock.Not(az.ResourceGroup), gomock.Any(), gomock.Any()).Return(network.LoadBalancer{}, &retry.Error{HTTPStatusCode: http.StatusNotFound, RawError: cloudprovider.InstanceNotFound}).AnyTimes()
+	mockLBsClient.EXPECT().Delete(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).MaxTimes(1)
+
+	return expectedLBName
 }
 
 func setMockLBs(az *Cloud, ctrl *gomock.Controller, expectedLBs *[]network.LoadBalancer, svcName string, lbCount, serviceIndex int, isInternal bool) string {
@@ -308,7 +487,7 @@ func testLoadBalancerServiceDefaultModeSelection(t *testing.T, isInternal bool) 
 	setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, serviceCount)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	mockLBBackendPool.EXPECT().GetBackendPrivateIPs(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
@@ -377,7 +556,7 @@ func testLoadBalancerServiceAutoModeSelection(t *testing.T, isInternal bool) {
 	expectedLBs := make([]network.LoadBalancer, 0)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	mockLBBackendPool.EXPECT().GetBackendPrivateIPs(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
@@ -458,7 +637,7 @@ func testLoadBalancerServicesSpecifiedSelection(t *testing.T, isInternal bool) {
 	expectedLBs := make([]network.LoadBalancer, 0)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	mockLBBackendPool.EXPECT().GetBackendPrivateIPs(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
@@ -517,7 +696,7 @@ func testLoadBalancerMaxRulesServices(t *testing.T, isInternal bool) {
 	expectedLBs := make([]network.LoadBalancer, 0)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	mockLBBackendPool.EXPECT().GetBackendPrivateIPs(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
@@ -602,7 +781,7 @@ func testLoadBalancerServiceAutoModeDeleteSelection(t *testing.T, isInternal boo
 	expectedLBs := make([]network.LoadBalancer, 0)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	mockLBBackendPool.EXPECT().GetBackendPrivateIPs(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
@@ -687,28 +866,23 @@ func TestReconcileLoadBalancerAddServiceOnInternalSubnet(t *testing.T) {
 
 	az := GetTestCloud(ctrl)
 	clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 1, 1)
-	setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
+	setMockEnvDualStack(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
 
-	svc := getInternalTestService("service1", 80)
+	svc := getInternalTestServiceDualStack("service1", 80)
 	validateTestSubnet(t, az, &svc)
 
 	expectedLBs := make([]network.LoadBalancer, 0)
-	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, true)
+	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, true)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
-	// ensure we got a frontend ip configuration
-	if len(*lb.FrontendIPConfigurations) != 1 {
-		t.Error("Expected the loadbalancer to have a frontend ip configuration")
-	}
-
+	// ensure we got 2 frontend ip configurations
+	assert.Equal(t, 2, len(*lb.FrontendIPConfigurations))
 	validateLoadBalancer(t, lb, svc)
 }
 
@@ -725,14 +899,10 @@ func TestReconcileSecurityGroupFromAnyDestinationAddressPrefixToLoadBalancerIP(t
 
 	// Simulate a pre-Kubernetes 1.8 NSG, where we do not specify the destination address prefix
 	_, err := az.reconcileSecurityGroup(testClusterName, &svc1, pointer.String(""), nil, true)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 	isIPv6 := utilnet.IsIPv6String(svc1.Spec.ClusterIP)
 	sg, err = az.reconcileSecurityGroup(testClusterName, &svc1, pointer.String(getServiceLoadBalancerIP(&svc1, isIPv6)), nil, true)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 	validateSecurityGroup(t, sg, svc1)
 }
 
@@ -749,9 +919,7 @@ func TestReconcileSecurityGroupDynamicLoadBalancerIP(t *testing.T) {
 
 	dynamicallyAssignedIP := "192.168.0.0"
 	sg, err := az.reconcileSecurityGroup(testClusterName, &svc1, pointer.String(dynamicallyAssignedIP), nil, true)
-	if err != nil {
-		t.Errorf("unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 	validateSecurityGroup(t, sg, svc1)
 }
 
@@ -762,16 +930,16 @@ func TestReconcileLoadBalancerAddServicesOnMultipleSubnets(t *testing.T) {
 
 	az := GetTestCloud(ctrl)
 	clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 1, 1)
-	setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
+	setMockEnvDualStack(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
 
-	svc1 := getTestService("service1", v1.ProtocolTCP, nil, false, 8081)
-	svc2 := getInternalTestService("service2", 8081)
+	svc1 := getTestServiceDualStack("service1", v1.ProtocolTCP, nil, 8081)
+	svc2 := getInternalTestServiceDualStack("service2", 8081)
 
 	expectedLBs := make([]network.LoadBalancer, 0)
-	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, false)
+	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, false)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	// svc1 is using LB without "-internal" suffix
@@ -781,9 +949,7 @@ func TestReconcileLoadBalancerAddServicesOnMultipleSubnets(t *testing.T) {
 	}
 
 	// ensure we got a frontend ip configuration for each service
-	if len(*lb.FrontendIPConfigurations) != 1 {
-		t.Error("Expected the loadbalancer to have 1 frontend ip configurations")
-	}
+	assert.Equal(t, 2, len(*lb.FrontendIPConfigurations))
 
 	validateLoadBalancer(t, lb, svc1)
 
@@ -791,7 +957,7 @@ func TestReconcileLoadBalancerAddServicesOnMultipleSubnets(t *testing.T) {
 	validateTestSubnet(t, az, &svc2)
 
 	expectedLBs = make([]network.LoadBalancer, 0)
-	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 2, true)
+	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 2, true)
 
 	// svc2 is using LB with "-internal" suffix
 	lb, err = az.reconcileLoadBalancer(testClusterName, &svc2, clusterResources.nodes, true /* wantLb */)
@@ -800,9 +966,7 @@ func TestReconcileLoadBalancerAddServicesOnMultipleSubnets(t *testing.T) {
 	}
 
 	// ensure we got a frontend ip configuration for each service
-	if len(*lb.FrontendIPConfigurations) != 1 {
-		t.Error("Expected the loadbalancer to have 1 frontend ip configurations")
-	}
+	assert.Equal(t, 2, len(*lb.FrontendIPConfigurations))
 
 	validateLoadBalancer(t, lb, svc2)
 }
@@ -814,16 +978,16 @@ func TestReconcileLoadBalancerEditServiceSubnet(t *testing.T) {
 
 	az := GetTestCloud(ctrl)
 	clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 1, 1)
-	setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
+	setMockEnvDualStack(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
 
-	svc := getInternalTestService("service1", 8081)
+	svc := getInternalTestServiceDualStack("service1", 8081)
 	validateTestSubnet(t, az, &svc)
 
 	expectedLBs := make([]network.LoadBalancer, 0)
-	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, true)
+	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, true)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	expectedPLS := make([]network.PrivateLinkService, 0)
@@ -841,7 +1005,7 @@ func TestReconcileLoadBalancerEditServiceSubnet(t *testing.T) {
 	validateTestSubnet(t, az, &svc)
 
 	expectedLBs = make([]network.LoadBalancer, 0)
-	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, true)
+	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, true)
 
 	lb, err = az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
 	if err != nil {
@@ -849,9 +1013,7 @@ func TestReconcileLoadBalancerEditServiceSubnet(t *testing.T) {
 	}
 
 	// ensure we got a frontend ip configuration for the service
-	if len(*lb.FrontendIPConfigurations) != 1 {
-		t.Error("Expected the loadbalancer to have 1 frontend ip configuration")
-	}
+	assert.Equal(t, 2, len(*lb.FrontendIPConfigurations))
 
 	validateLoadBalancer(t, lb, svc)
 }
@@ -862,28 +1024,24 @@ func TestReconcileLoadBalancerNodeHealth(t *testing.T) {
 
 	az := GetTestCloud(ctrl)
 	clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 1, 1)
-	setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
+	setMockEnvDualStack(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
 
-	svc := getTestService("service1", v1.ProtocolTCP, nil, false, 80)
+	svc := getTestServiceDualStack("service1", v1.ProtocolTCP, nil, 80)
 	svc.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeLocal
 	svc.Spec.HealthCheckNodePort = int32(32456)
 
 	expectedLBs := make([]network.LoadBalancer, 0)
-	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, false)
+	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, false)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	// ensure we got a frontend ip configuration
-	if len(*lb.FrontendIPConfigurations) != 1 {
-		t.Error("Expected the loadbalancer to have a frontend ip configuration")
-	}
+	assert.Equal(t, 2, len(*lb.FrontendIPConfigurations))
 
 	validateLoadBalancer(t, lb, svc)
 }
@@ -895,21 +1053,19 @@ func TestReconcileLoadBalancerRemoveService(t *testing.T) {
 
 	az := GetTestCloud(ctrl)
 	clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 1, 1)
-	setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
+	setMockEnvDualStack(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
 
-	svc := getTestService("service1", v1.ProtocolTCP, nil, false, 80, 443)
+	svc := getTestServiceDualStack("service1", v1.ProtocolTCP, nil, 80, 443)
 
 	expectedLBs := make([]network.LoadBalancer, 0)
-	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, false)
+	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, false)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	_, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	expectedLBs[0].FrontendIPConfigurations = &[]network.FrontendIPConfiguration{}
 	mockLBsClient := mockloadbalancerclient.NewMockInterface(ctrl)
@@ -920,14 +1076,10 @@ func TestReconcileLoadBalancerRemoveService(t *testing.T) {
 	mockLBsClient.EXPECT().Delete(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, false /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	// ensure we abandoned the frontend ip configuration
-	if len(*lb.FrontendIPConfigurations) != 0 {
-		t.Error("Expected the loadbalancer to have no frontend ip configuration")
-	}
+	assert.Zero(t, len(*lb.FrontendIPConfigurations))
 
 	validateLoadBalancer(t, lb)
 }
@@ -939,24 +1091,22 @@ func TestReconcileLoadBalancerRemoveAllPortsRemovesFrontendConfig(t *testing.T) 
 
 	az := GetTestCloud(ctrl)
 	clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 1, 1)
-	setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
+	setMockEnvDualStack(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
 
-	svc := getTestService("service1", v1.ProtocolTCP, nil, false, 80)
+	svc := getTestServiceDualStack("service1", v1.ProtocolTCP, nil, 80)
 
 	expectedLBs := make([]network.LoadBalancer, 0)
-	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, false)
+	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, false)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 	validateLoadBalancer(t, lb, svc)
 
-	svcUpdated := getTestService("service1", v1.ProtocolTCP, nil, false)
+	svcUpdated := getTestServiceDualStack("service1", v1.ProtocolTCP, nil)
 
 	expectedLBs[0].FrontendIPConfigurations = &[]network.FrontendIPConfiguration{}
 	mockLBsClient := mockloadbalancerclient.NewMockInterface(ctrl)
@@ -967,14 +1117,10 @@ func TestReconcileLoadBalancerRemoveAllPortsRemovesFrontendConfig(t *testing.T) 
 	mockLBsClient.EXPECT().Delete(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
 
 	lb, err = az.reconcileLoadBalancer(testClusterName, &svcUpdated, clusterResources.nodes, false /* wantLb*/)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	// ensure we abandoned the frontend ip configuration
-	if len(*lb.FrontendIPConfigurations) != 0 {
-		t.Error("Expected the loadbalancer to have no frontend ip configuration")
-	}
+	assert.Zero(t, len(*lb.FrontendIPConfigurations))
 
 	validateLoadBalancer(t, lb, svcUpdated)
 }
@@ -986,27 +1132,23 @@ func TestReconcileLoadBalancerRemovesPort(t *testing.T) {
 
 	az := GetTestCloud(ctrl)
 	clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 1, 1)
-	setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
+	setMockEnvDualStack(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	expectedLBs := make([]network.LoadBalancer, 0)
-	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, false)
-	svc := getTestService("service1", v1.ProtocolTCP, nil, false, 80, 443)
+	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, false)
+	svc := getTestServiceDualStack("service1", v1.ProtocolTCP, nil, 80, 443)
 	_, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	expectedLBs = make([]network.LoadBalancer, 0)
-	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, false)
-	svcUpdated := getTestService("service1", v1.ProtocolTCP, nil, false, 80)
+	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, false)
+	svcUpdated := getTestServiceDualStack("service1", v1.ProtocolTCP, nil, 80)
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svcUpdated, clusterResources.nodes, true /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	validateLoadBalancer(t, lb, svcUpdated)
 }
@@ -1018,16 +1160,16 @@ func TestReconcileLoadBalancerMultipleServices(t *testing.T) {
 
 	az := GetTestCloud(ctrl)
 	clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 1, 1)
-	setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, 2)
+	setMockEnvDualStack(az, ctrl, expectedInterfaces, expectedVirtualMachines, 2)
 
-	svc1 := getTestService("service1", v1.ProtocolTCP, nil, false, 80, 443)
-	svc2 := getTestService("service2", v1.ProtocolTCP, nil, false, 81)
+	svc1 := getTestServiceDualStack("service1", v1.ProtocolTCP, nil, 80, 443)
+	svc2 := getTestServiceDualStack("service2", v1.ProtocolTCP, nil, 81)
 
 	expectedLBs := make([]network.LoadBalancer, 0)
-	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, false)
+	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, false)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	expectedPLS := make([]network.PrivateLinkService, 0)
@@ -1035,16 +1177,12 @@ func TestReconcileLoadBalancerMultipleServices(t *testing.T) {
 	mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
 
 	_, err := az.reconcileLoadBalancer(testClusterName, &svc1, clusterResources.nodes, true /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
-	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 2, false)
+	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 2, false)
 
 	updatedLoadBalancer, err := az.reconcileLoadBalancer(testClusterName, &svc2, clusterResources.nodes, true /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	validateLoadBalancer(t, updatedLoadBalancer, svc1, svc2)
 }
@@ -1093,7 +1231,7 @@ func TestServiceDefaultsToNoSessionPersistence(t *testing.T) {
 	mockPIPsClient.EXPECT().List(gomock.Any(), az.ResourceGroup).Return([]network.PublicIPAddress{expectedPIP}, nil).AnyTimes()
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
@@ -1152,7 +1290,7 @@ func TestServiceRespectsNoSessionAffinity(t *testing.T) {
 	mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
@@ -1213,7 +1351,7 @@ func TestServiceRespectsClientIPSessionAffinity(t *testing.T) {
 	mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
@@ -1245,15 +1383,13 @@ func TestReconcileSecurityGroupNewServiceAddsPort(t *testing.T) {
 	expectedLBs := make([]network.LoadBalancer, 0)
 	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, false)
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc1, clusterResources.nodes, true)
-	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb, nil)
+	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb)
 
 	sg, err := az.reconcileSecurityGroup(testClusterName, &svc1, &lbStatus.Ingress[0].IP, nil, true /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	validateSecurityGroup(t, sg, svc1)
 }
@@ -1273,15 +1409,13 @@ func TestReconcileSecurityGroupNewInternalServiceAddsPort(t *testing.T) {
 	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, true)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc1, clusterResources.nodes, true)
-	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb, nil)
+	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb)
 	sg, err := az.reconcileSecurityGroup(testClusterName, &svc1, &lbStatus.Ingress[0].IP, nil, true /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	validateSecurityGroup(t, sg, svc1)
 }
@@ -1308,21 +1442,19 @@ func TestReconcileSecurityGroupRemoveService(t *testing.T) {
 			"Standard"), nil).AnyTimes()
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, _ := az.reconcileLoadBalancer(testClusterName, &service1, clusterResources.nodes, true)
 	_, _ = az.reconcileLoadBalancer(testClusterName, &service2, clusterResources.nodes, true)
 
-	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&service1, lb, nil)
+	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&service1, lb)
 
 	sg := getTestSecurityGroup(az, service1, service2)
 	validateSecurityGroup(t, sg, service1, service2)
 
 	sg, err := az.reconcileSecurityGroup(testClusterName, &service1, &lbStatus.Ingress[0].IP, nil, false /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	validateSecurityGroup(t, sg, service2)
 }
@@ -1337,7 +1469,7 @@ func TestReconcileSecurityGroupRemoveServiceRemovesPort(t *testing.T) {
 	setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	getTestSecurityGroup(az, svc)
@@ -1353,12 +1485,10 @@ func TestReconcileSecurityGroupRemoveServiceRemovesPort(t *testing.T) {
 			svc,
 			"Standard"), nil).AnyTimes()
 	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true)
-	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc, lb, nil)
+	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc, lb)
 
 	sg, err := az.reconcileSecurityGroup(testClusterName, &svcUpdated, &lbStatus.Ingress[0].IP, nil, true /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	validateSecurityGroup(t, sg, svcUpdated)
 }
@@ -1377,19 +1507,17 @@ func TestReconcileSecurityWithSourceRanges(t *testing.T) {
 	setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	getTestSecurityGroup(az, svc)
 	expectedLBs := make([]network.LoadBalancer, 0)
 	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, false)
 	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true)
-	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc, lb, nil)
+	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc, lb)
 
 	sg, err := az.reconcileSecurityGroup(testClusterName, &svc, &lbStatus.Ingress[0].IP, nil, true /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	validateSecurityGroup(t, sg, svc)
 }
@@ -1428,11 +1556,11 @@ func TestReconcileSecurityGroupEtagMismatch(t *testing.T) {
 			"Standard"), nil).AnyTimes()
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc1, clusterResources.nodes, true)
-	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb, nil)
+	lbStatus, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb)
 
 	newSG, err := az.reconcileSecurityGroup(testClusterName, &svc1, &lbStatus.Ingress[0].IP, nil, true /* wantLb */)
 	assert.Nil(t, newSG)
@@ -1441,103 +1569,99 @@ func TestReconcileSecurityGroupEtagMismatch(t *testing.T) {
 	assert.Equal(t, expectedError.Error(), err)
 }
 
-func TestReconcilePublicIPWithNewService(t *testing.T) {
+func TestReconcilePublicIPsWithNewService(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
 	az := GetTestCloud(ctrl)
-	svc := getTestService("servicea", v1.ProtocolTCP, nil, false, 80, 443)
+	svc := getTestServiceDualStack("servicea", v1.ProtocolTCP, nil, 80, 443)
+	v4Enabled, v6Enabled := getIPFamiliesEnabled(&svc)
 
-	setMockPublicIPs(az, ctrl, 1)
+	setMockPublicIPs(az, ctrl, 1, v4Enabled, v6Enabled)
 
-	pip, err := az.reconcilePublicIP(testClusterName, &svc, "", true /* wantLb*/)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
-	validatePublicIP(t, pip, &svc, true)
+	pips, err := az.reconcilePublicIPs(testClusterName, &svc, "", true /* wantLb*/)
+	assert.Nil(t, err)
+	validatePublicIPs(t, pips, &svc, true)
 
-	pip2, err := az.reconcilePublicIP(testClusterName, &svc, "", true /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
+	pips2, err := az.reconcilePublicIPs(testClusterName, &svc, "", true /* wantLb */)
+	assert.Nil(t, err)
+	validatePublicIPs(t, pips2, &svc, true)
+
+	pipsNames1, pipsNames2 := []string{}, []string{}
+	pipsAddrs1, pipsAddrs2 := []string{}, []string{}
+	for _, pip := range pips {
+		pipsNames1 = append(pipsNames1, pointer.StringDeref(pip.Name, ""))
+		pipsAddrs1 = append(pipsAddrs1, pointer.StringDeref(pip.PublicIPAddressPropertiesFormat.IPAddress, ""))
 	}
-	validatePublicIP(t, pip2, &svc, true)
-	if pip.Name != pip2.Name ||
-		pip.PublicIPAddressPropertiesFormat.IPAddress != pip2.PublicIPAddressPropertiesFormat.IPAddress {
-		t.Errorf("We should get the exact same public ip resource after a second reconcile")
+	for _, pip := range pips2 {
+		pipsNames2 = append(pipsNames2, pointer.StringDeref(pip.Name, ""))
+		pipsAddrs2 = append(pipsAddrs2, pointer.StringDeref(pip.PublicIPAddressPropertiesFormat.IPAddress, ""))
 	}
+	assert.Truef(t, compareStrings(pipsNames1, pipsNames2) && compareStrings(pipsAddrs1, pipsAddrs2),
+		"We should get the exact same public ip resource after a second reconcile")
 }
 
-func TestReconcilePublicIPRemoveService(t *testing.T) {
+func TestReconcilePublicIPsRemoveService(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
 	az := GetTestCloud(ctrl)
-	svc := getTestService("servicea", v1.ProtocolTCP, nil, false, 80, 443)
+	svc := getTestServiceDualStack("servicea", v1.ProtocolTCP, nil, 80, 443)
+	v4Enabled, v6Enabled := getIPFamiliesEnabled(&svc)
 
-	setMockPublicIPs(az, ctrl, 1)
+	setMockPublicIPs(az, ctrl, 1, v4Enabled, v6Enabled)
 
-	pip, err := az.reconcilePublicIP(testClusterName, &svc, "", true /* wantLb*/)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	pips, err := az.reconcilePublicIPs(testClusterName, &svc, "", true /* wantLb*/)
+	assert.Nil(t, err)
 
-	validatePublicIP(t, pip, &svc, true)
+	validatePublicIPs(t, pips, &svc, true)
 
 	// Remove the service
-	pip, err = az.reconcilePublicIP(testClusterName, &svc, "", false /* wantLb */)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
-	validatePublicIP(t, pip, &svc, false)
-
+	pips, err = az.reconcilePublicIPs(testClusterName, &svc, "", false /* wantLb */)
+	assert.Nil(t, err)
+	validatePublicIPs(t, pips, &svc, false)
 }
 
-func TestReconcilePublicIPWithInternalService(t *testing.T) {
+func TestReconcilePublicIPsWithInternalService(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
 	az := GetTestCloud(ctrl)
-	svc := getInternalTestService("servicea", 80, 443)
+	svc := getInternalTestServiceDualStack("servicea", 80, 443)
+	v4Enabled, v6Enabled := getIPFamiliesEnabled(&svc)
 
-	setMockPublicIPs(az, ctrl, 1)
+	setMockPublicIPs(az, ctrl, 1, v4Enabled, v6Enabled)
 
-	pip, err := az.reconcilePublicIP(testClusterName, &svc, "", true /* wantLb*/)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	pips, err := az.reconcilePublicIPs(testClusterName, &svc, "", true /* wantLb*/)
+	assert.Nil(t, err)
 
-	validatePublicIP(t, pip, &svc, true)
+	validatePublicIPs(t, pips, &svc, true)
 }
 
-func TestReconcilePublicIPWithExternalAndInternalSwitch(t *testing.T) {
+func TestReconcilePublicIPsWithExternalAndInternalSwitch(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
 	az := GetTestCloud(ctrl)
-	svc := getInternalTestService("servicea", 80, 443)
+	svc := getInternalTestServiceDualStack("servicea", 80, 443)
+	v4Enabled, v6Enabled := getIPFamiliesEnabled(&svc)
 
-	setMockPublicIPs(az, ctrl, 1)
+	setMockPublicIPs(az, ctrl, 1, v4Enabled, v6Enabled)
 
-	pip, err := az.reconcilePublicIP(testClusterName, &svc, "", true /* wantLb*/)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
-	validatePublicIP(t, pip, &svc, true)
+	pips, err := az.reconcilePublicIPs(testClusterName, &svc, "", true /* wantLb*/)
+	assert.Nil(t, err)
+	validatePublicIPs(t, pips, &svc, true)
 
 	// Update to external service
 	svcUpdated := getTestService("servicea", v1.ProtocolTCP, nil, false, 80)
-	pip, err = az.reconcilePublicIP(testClusterName, &svcUpdated, "", true /* wantLb*/)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
-	validatePublicIP(t, pip, &svcUpdated, true)
+	pips, err = az.reconcilePublicIPs(testClusterName, &svcUpdated, "", true /* wantLb*/)
+	assert.Nil(t, err)
+	validatePublicIPs(t, pips, &svcUpdated, true)
 
 	// Update to internal service again
-	pip, err = az.reconcilePublicIP(testClusterName, &svc, "", true /* wantLb*/)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
-	validatePublicIP(t, pip, &svc, true)
+	pips, err = az.reconcilePublicIPs(testClusterName, &svc, "", true /* wantLb*/)
+	assert.Nil(t, err)
+	validatePublicIPs(t, pips, &svc, true)
 }
 
 const networkInterfacesIDTemplate = "/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Network/networkInterfaces/%s"
@@ -1665,12 +1789,27 @@ func getBackendPort(port int32) int32 {
 }
 
 // TODO: This function should be merged into getTestService()
-func makeTestServiceDualStack(svc *v1.Service) {
+func getTestServiceDualStack(identifier string, proto v1.Protocol, annotations map[string]string, requestedPorts ...int32) v1.Service {
+	svc := getTestServiceCommon(identifier, proto, annotations, requestedPorts...)
 	svc.Spec.ClusterIPs = []string{"10.0.0.2", "fd00::1907"}
 	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol, v1.IPv6Protocol}
+
+	return svc
 }
 
 func getTestService(identifier string, proto v1.Protocol, annotations map[string]string, isIPv6 bool, requestedPorts ...int32) v1.Service {
+	svc := getTestServiceCommon(identifier, proto, annotations, requestedPorts...)
+	svc.Spec.ClusterIP = "10.0.0.2"
+	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
+	if isIPv6 {
+		svc.Spec.ClusterIP = "fd00::1907"
+		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv6Protocol}
+	}
+
+	return svc
+}
+
+func getTestServiceCommon(identifier string, proto v1.Protocol, annotations map[string]string, requestedPorts ...int32) v1.Service {
 	ports := []v1.ServicePort{}
 	for _, port := range requestedPorts {
 		ports = append(ports, v1.ServicePort{
@@ -1696,22 +1835,25 @@ func getTestService(identifier string, proto v1.Protocol, annotations map[string
 		svc.Annotations = annotations
 	}
 
-	svc.Spec.ClusterIP = "10.0.0.2"
-	svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv4Protocol}
-	if isIPv6 {
-		svc.Spec.ClusterIP = "fd00::1907"
-		svc.Spec.IPFamilies = []v1.IPFamily{v1.IPv6Protocol}
-	}
-
 	return svc
 }
 
 func getInternalTestService(identifier string, requestedPorts ...int32) v1.Service {
-	return getTestServiceWithAnnotation(identifier, map[string]string{consts.ServiceAnnotationLoadBalancerInternal: consts.TrueAnnotationValue}, requestedPorts...)
+	return getTestServiceWithAnnotation(identifier, map[string]string{consts.ServiceAnnotationLoadBalancerInternal: consts.TrueAnnotationValue}, false, requestedPorts...)
 }
 
-func getTestServiceWithAnnotation(identifier string, annotations map[string]string, requestedPorts ...int32) v1.Service {
-	svc := getTestService(identifier, v1.ProtocolTCP, nil, false, requestedPorts...)
+// getInternalTestServiceDualStack() should be merged into getInternalTestService()
+func getInternalTestServiceDualStack(identifier string, requestedPorts ...int32) v1.Service {
+	return getTestServiceWithAnnotation(identifier, map[string]string{consts.ServiceAnnotationLoadBalancerInternal: consts.TrueAnnotationValue}, true, requestedPorts...)
+}
+
+func getTestServiceWithAnnotation(identifier string, annotations map[string]string, isDualStack bool, requestedPorts ...int32) v1.Service {
+	var svc v1.Service
+	if isDualStack {
+		svc = getTestServiceDualStack(identifier, v1.ProtocolTCP, nil, requestedPorts...)
+	} else {
+		svc = getTestService(identifier, v1.ProtocolTCP, nil, false, requestedPorts...)
+	}
 	for k, v := range annotations {
 		svc.Annotations[k] = v
 	}
@@ -1783,9 +1925,13 @@ func validateLoadBalancer(t *testing.T, loadBalancer *network.LoadBalancer, serv
 	expectedFrontendIPCount := 0
 	expectedProbeCount := 0
 	expectedFrontendIPs := []ExpectedFrontendIPInfo{}
+	svcIPFamilyCount := 1
+	if len(services) > 0 {
+		svcIPFamilyCount = len(services[0].Spec.IPFamilies)
+	}
 	for i, svc := range services {
 		if len(svc.Spec.Ports) > 0 {
-			expectedFrontendIPCount++
+			expectedFrontendIPCount += svcIPFamilyCount
 			expectedSubnetName := ""
 			if requiresInternalLoadBalancer(&services[i]) {
 				expectedSubnetName = svc.Annotations[consts.ServiceAnnotationLoadBalancerInternalSubnet]
@@ -1798,22 +1944,33 @@ func validateLoadBalancer(t *testing.T, loadBalancer *network.LoadBalancer, serv
 				Subnet: pointer.String(expectedSubnetName),
 			}
 			expectedFrontendIPs = append(expectedFrontendIPs, expectedFrontendIP)
+			if svcIPFamilyCount == 2 {
+				expectedFrontendIP := ExpectedFrontendIPInfo{
+					Name:   az.getDefaultFrontendIPConfigName(&services[i]) + "-" + v6Suffix,
+					Subnet: pointer.String(expectedSubnetName),
+				}
+				expectedFrontendIPs = append(expectedFrontendIPs, expectedFrontendIP)
+			}
 		}
 		for _, wantedRule := range svc.Spec.Ports {
-			expectedRuleCount++
-			isIPv6 := utilnet.IsIPv6String(services[i].Spec.ClusterIP)
-			wantedRuleName := az.getLoadBalancerRuleName(&services[i], wantedRule.Protocol, wantedRule.Port, isIPv6)
-			foundRule := false
-			for _, actualRule := range *loadBalancer.LoadBalancingRules {
-				if strings.EqualFold(*actualRule.Name, wantedRuleName) &&
-					*actualRule.FrontendPort == wantedRule.Port &&
-					*actualRule.BackendPort == wantedRule.Port {
-					foundRule = true
-					break
+			expectedRuleCount += svcIPFamilyCount
+			wantedRuleNameMap := map[bool]string{}
+			for _, ipFamily := range services[i].Spec.IPFamilies {
+				isIPv6 := ipFamily == v1.IPv6Protocol
+				wantedRuleName := az.getLoadBalancerRuleName(&services[i], wantedRule.Protocol, wantedRule.Port, isIPv6)
+				wantedRuleNameMap[isIPv6] = wantedRuleName
+				foundRule := false
+				for _, actualRule := range *loadBalancer.LoadBalancingRules {
+					if strings.EqualFold(*actualRule.Name, wantedRuleName) &&
+						*actualRule.FrontendPort == wantedRule.Port &&
+						*actualRule.BackendPort == wantedRule.Port {
+						foundRule = true
+						break
+					}
 				}
-			}
-			if !foundRule {
-				t.Errorf("Expected load balancer rule but didn't find it: %q", wantedRuleName)
+				if !foundRule {
+					t.Errorf("Expected load balancer rule but didn't find it: %q", wantedRuleName)
+				}
 			}
 
 			// if UDP rule, there is no probe
@@ -1821,35 +1978,37 @@ func validateLoadBalancer(t *testing.T, loadBalancer *network.LoadBalancer, serv
 				continue
 			}
 
-			expectedProbeCount++
-			foundProbe := false
-			if servicehelpers.NeedsHealthCheck(&services[i]) {
-				path, port := servicehelpers.GetServiceHealthCheckPathPort(&services[i])
-				isIPv6 := utilnet.IsIPv6String(services[i].Spec.ClusterIP)
-				wantedRuleName := az.getLoadBalancerRuleName(&services[i], v1.ProtocolTCP, port, isIPv6)
-				for _, actualProbe := range *loadBalancer.Probes {
-					if strings.EqualFold(*actualProbe.Name, wantedRuleName) &&
-						*actualProbe.Port == port &&
-						*actualProbe.RequestPath == path &&
-						actualProbe.Protocol == network.ProbeProtocolHTTP {
-						foundProbe = true
-						break
+			expectedProbeCount += svcIPFamilyCount
+			for _, ipFamily := range services[i].Spec.IPFamilies {
+				isIPv6 := ipFamily == v1.IPv6Protocol
+				foundProbe := false
+				if servicehelpers.NeedsHealthCheck(&services[i]) {
+					path, port := servicehelpers.GetServiceHealthCheckPathPort(&services[i])
+					wantedRuleName := az.getLoadBalancerRuleName(&services[i], v1.ProtocolTCP, port, isIPv6)
+					for _, actualProbe := range *loadBalancer.Probes {
+						if strings.EqualFold(*actualProbe.Name, wantedRuleName) &&
+							*actualProbe.Port == port &&
+							*actualProbe.RequestPath == path &&
+							actualProbe.Protocol == network.ProbeProtocolHTTP {
+							foundProbe = true
+							break
+						}
+					}
+				} else {
+					for _, actualProbe := range *loadBalancer.Probes {
+						if strings.EqualFold(*actualProbe.Name, wantedRuleNameMap[isIPv6]) &&
+							*actualProbe.Port == wantedRule.NodePort {
+							foundProbe = true
+							break
+						}
 					}
 				}
-			} else {
-				for _, actualProbe := range *loadBalancer.Probes {
-					if strings.EqualFold(*actualProbe.Name, wantedRuleName) &&
-						*actualProbe.Port == wantedRule.NodePort {
-						foundProbe = true
-						break
+				if !foundProbe {
+					for _, actualProbe := range *loadBalancer.Probes {
+						t.Logf("Probe: %s %d", *actualProbe.Name, *actualProbe.Port)
 					}
+					t.Errorf("Expected loadbalancer probe but didn't find it: %q", wantedRuleNameMap[isIPv6])
 				}
-			}
-			if !foundProbe {
-				for _, actualProbe := range *loadBalancer.Probes {
-					t.Logf("Probe: %s %d", *actualProbe.Name, *actualProbe.Port)
-				}
-				t.Errorf("Expected loadbalancer probe but didn't find it: %q", wantedRuleName)
 			}
 		}
 	}
@@ -1913,6 +2072,12 @@ func describeFIPs(frontendIPs []network.FrontendIPConfiguration) string {
 		description = description + actualFIPText
 	}
 	return description
+}
+
+func validatePublicIPs(t *testing.T, pips []*network.PublicIPAddress, service *v1.Service, wantLb bool) {
+	for _, pip := range pips {
+		validatePublicIP(t, pip, service, wantLb)
+	}
 }
 
 func validatePublicIP(t *testing.T, publicIP *network.PublicIPAddress, service *v1.Service, wantLb bool) {
@@ -2153,6 +2318,10 @@ func TestNewCloudFromJSON(t *testing.T) {
 		"vmType": "vmss",
 		"disableAvailabilitySetNodes": true
 	}`
+	os.Setenv("AZURE_FEDERATED_TOKEN_FILE", "--aad-federated-token-file--")
+	defer func() {
+		os.Unsetenv("AZURE_FEDERATED_TOKEN_FILE")
+	}()
 	validateConfig(t, config)
 }
 
@@ -2216,6 +2385,10 @@ plsCacheTTLInSeconds: 100
 vmType: vmss
 disableAvailabilitySetNodes: true
 `
+	os.Setenv("AZURE_FEDERATED_TOKEN_FILE", "--aad-federated-token-file--")
+	defer func() {
+		os.Unsetenv("AZURE_FEDERATED_TOKEN_FILE")
+	}()
 	validateConfig(t, config)
 }
 
@@ -2329,6 +2502,12 @@ func validateConfig(t *testing.T, config string) { //nolint
 	}
 	if !azureCloud.DisableAvailabilitySetNodes {
 		t.Errorf("got incorrect value for disableAvailabilitySetNodes")
+	}
+	if azureCloud.AADFederatedTokenFile != "--aad-federated-token-file--" {
+		t.Errorf("got incorrect value for AADFederatedTokenFile")
+	}
+	if !azureCloud.UseFederatedWorkloadIdentityExtension {
+		t.Errorf("got incorrect value for UseFederatedWorkloadIdentityExtension")
 	}
 }
 
@@ -2468,9 +2647,7 @@ func TestIfServiceSpecifiesSharedRuleAndRuleDoesNotExistItIsCreated(t *testing.T
 
 	isIPv6 := utilnet.IsIPv6String(svc.Spec.ClusterIP)
 	sg, err := az.reconcileSecurityGroup(testClusterName, &svc, pointer.String(getServiceLoadBalancerIP(&svc, isIPv6)), nil, true)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	validateSecurityGroup(t, sg, svc)
 
@@ -2528,9 +2705,7 @@ func TestIfServiceSpecifiesSharedRuleAndRuleExistsThenTheServicesPortAndAddressA
 
 	isIPv6 := utilnet.IsIPv6String(svc.Spec.ClusterIP)
 	sg, err := az.reconcileSecurityGroup(testClusterName, &svc, pointer.String(getServiceLoadBalancerIP(&svc, isIPv6)), nil, true)
-	if err != nil {
-		t.Errorf("Unexpected error: %q", err)
-	}
+	assert.Nil(t, err)
 
 	validateSecurityGroup(t, sg, svc)
 
@@ -3855,4 +4030,14 @@ func TestFindSecurityRule(t *testing.T) {
 		found := findSecurityRule([]network.SecurityRule{sg}, testCases[i].testRule)
 		assert.Equal(t, testCases[i].expected, found, testCases[i].desc)
 	}
+}
+
+func TestSetLBDefaults(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	az := GetTestCloud(ctrl)
+
+	config := &Config{}
+	_ = az.setLBDefaults(config)
+	assert.Equal(t, config.LoadBalancerSku, consts.LoadBalancerSkuStandard)
 }

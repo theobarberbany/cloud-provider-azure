@@ -24,7 +24,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -125,8 +125,7 @@ func (fs *FlexScaleSet) GetAgentPoolVMSetNames(nodes []*v1.Node) (*[]string, err
 // annotation would be ignored when using one SLB per cluster.
 func (fs *FlexScaleSet) GetVMSetNames(service *v1.Service, nodes []*v1.Node) (*[]string, error) {
 	hasMode, isAuto, serviceVMSetName := fs.getServiceLoadBalancerMode(service)
-	useSingleSLB := fs.useStandardLoadBalancer() && !fs.EnableMultipleStandardLoadBalancers
-	if !hasMode || useSingleSLB {
+	if !hasMode || fs.useStandardLoadBalancer() {
 		// no mode specified in service annotation or use single SLB mode
 		// default to PrimaryScaleSetName
 		vmssFlexNames := &[]string{fs.Config.PrimaryScaleSetName}
@@ -481,18 +480,6 @@ func (fs *FlexScaleSet) EnsureHostInPool(service *v1.Service, nodeName types.Nod
 	if !fs.useStandardLoadBalancer() {
 		return "", "", "", nil, fmt.Errorf("EnsureHostInPool: VMSS Flex does not support Basic Load Balancer")
 	}
-	if fs.EnableMultipleStandardLoadBalancers {
-		// need to check the vmSet name when using multiple standard LBs
-		needCheck = true
-
-		// ensure the vm that is supposed to share the primary SLB in the backendpool of the primary SLB
-		if strings.EqualFold(fs.GetPrimaryVMSetName(), vmSetNameOfLB) &&
-			fs.getVMSetNamesSharingPrimarySLB().Has(strings.ToLower(vmssFlexName)) {
-			klog.V(4).Infof("EnsureHostInPool: the vm %s in the vmSet %s is supposed to share the primary SLB",
-				nodeName, vmssFlexName)
-			needCheck = false
-		}
-	}
 	if vmSetNameOfLB != "" && needCheck && !strings.EqualFold(vmSetNameOfLB, vmssFlexName) {
 		klog.V(3).Infof("EnsureHostInPool skips node %s because it is not in the ScaleSet %s", name, vmSetNameOfLB)
 		return "", "", "", nil, errNotInVMSet
@@ -594,7 +581,7 @@ func (fs *FlexScaleSet) ensureVMSSFlexInPool(service *v1.Service, nodes []*v1.No
 
 	// the single standard load balancer supports multiple vmss in its backend while
 	// multiple standard load balancers doesn't
-	if fs.useStandardLoadBalancer() && !fs.EnableMultipleStandardLoadBalancers {
+	if fs.useStandardLoadBalancer() {
 		for _, node := range nodes {
 			if fs.excludeMasterNodesFromStandardLB() && isControlPlaneNode(node) {
 				continue
@@ -656,24 +643,13 @@ func (fs *FlexScaleSet) ensureVMSSFlexInPool(service *v1.Service, nodes []*v1.No
 			continue
 		}
 		vmssNIC := *vmssFlex.VirtualMachineProfile.NetworkProfile.NetworkInterfaceConfigurations
-		primaryNIC, err := getPrimaryNetworkInterfaceConfigurationForScaleSet(vmssNIC, vmssFlexName)
+		primaryNIC, err := getPrimaryNetworkInterfaceConfiguration(vmssNIC, vmssFlexName)
 		if err != nil {
 			return err
 		}
-		var primaryIPConfig *compute.VirtualMachineScaleSetIPConfiguration
-		ipv6 := isBackendPoolIPv6(backendPoolID)
-		// Find primary network interface configuration.
-		if !fs.Cloud.ipv6DualStackEnabled && !ipv6 {
-			// Find primary IP configuration.
-			primaryIPConfig, err = getPrimaryIPConfigFromVMSSNetworkConfig(primaryNIC)
-			if err != nil {
-				return err
-			}
-		} else {
-			primaryIPConfig, err = getConfigForScaleSetByIPFamily(primaryNIC, "", ipv6)
-			if err != nil {
-				return err
-			}
+		primaryIPConfig, err := getPrimaryIPConfigFromVMSSNetworkConfig(primaryNIC, backendPoolID, vmssFlexName)
+		if err != nil {
+			return err
 		}
 
 		loadBalancerBackendAddressPools := []compute.SubResource{}
@@ -798,7 +774,7 @@ func (fs *FlexScaleSet) EnsureHostsInPool(service *v1.Service, nodes []*v1.Node,
 
 func (fs *FlexScaleSet) ensureBackendPoolDeletedFromVmssFlex(backendPoolIDs []string, vmSetName string) error {
 	vmssNamesMap := make(map[string]bool)
-	if fs.useStandardLoadBalancer() && !fs.EnableMultipleStandardLoadBalancers {
+	if fs.useStandardLoadBalancer() {
 		cached, err := fs.vmssFlexCache.Get(consts.VmssFlexKey, azcache.CacheReadTypeDefault)
 		if err != nil {
 			klog.Errorf("ensureBackendPoolDeletedFromVmssFlex: failed to get vmss flex from cache: %v", err)
@@ -840,42 +816,29 @@ func (fs *FlexScaleSet) EnsureBackendPoolDeletedFromVMSets(vmssNamesMap map[stri
 			continue
 		}
 		vmssNIC := *vmss.VirtualMachineProfile.NetworkProfile.NetworkInterfaceConfigurations
-		primaryNIC, err := getPrimaryNetworkInterfaceConfigurationForScaleSet(vmssNIC, vmssName)
+		primaryNIC, err := getPrimaryNetworkInterfaceConfiguration(vmssNIC, vmssName)
 		if err != nil {
 			klog.Errorf("fs.EnsureBackendPoolDeletedFromVMSets: failed to get the primary network interface config of the VMSS %s: %v", vmssName, err)
 			errors = append(errors, err)
 			continue
 		}
-		primaryIPConfig, err := getPrimaryIPConfigFromVMSSNetworkConfig(primaryNIC)
-		if err != nil {
-			klog.Errorf("fs.EnsureBackendPoolDeletedFromVMSets: failed to the primary IP config from the VMSS %s's network config : %v", vmssName, err)
-			errors = append(errors, err)
-			continue
-		}
-		loadBalancerBackendAddressPools := []compute.SubResource{}
-		if primaryIPConfig.LoadBalancerBackendAddressPools != nil {
-			loadBalancerBackendAddressPools = *primaryIPConfig.LoadBalancerBackendAddressPools
-		}
-
-		var found bool
-		var newBackendPools []compute.SubResource
-		for i := len(loadBalancerBackendAddressPools) - 1; i >= 0; i-- {
-			curPool := loadBalancerBackendAddressPools[i]
-			for _, backendPoolID := range backendPoolIDs {
-				if strings.EqualFold(backendPoolID, *curPool.ID) {
-					klog.V(10).Infof("fs.EnsureBackendPoolDeletedFromVMSets gets unwanted backend pool %q for VMSS %s", backendPoolID, vmssName)
-					found = true
-					newBackendPools = append(loadBalancerBackendAddressPools[:i], loadBalancerBackendAddressPools[i+1:]...)
-				}
+		foundTotal := false
+		for _, backendPoolID := range backendPoolIDs {
+			found, err := deleteBackendPoolFromIPConfig("FlexSet.EnsureBackendPoolDeletedFromVMSets", backendPoolID, vmssName, primaryNIC)
+			if err != nil {
+				errors = append(errors, err)
+				continue
+			}
+			if found {
+				foundTotal = true
 			}
 		}
-		if !found {
+		if !foundTotal {
 			continue
 		}
 
 		vmssUpdaters = append(vmssUpdaters, func() error {
 			// Compose a new vmss with added backendPoolID.
-			primaryIPConfig.LoadBalancerBackendAddressPools = &newBackendPools
 			newVMSS := compute.VirtualMachineScaleSet{
 				Location: vmss.Location,
 				VirtualMachineScaleSetProperties: &compute.VirtualMachineScaleSetProperties{
@@ -960,7 +923,7 @@ func (fs *FlexScaleSet) EnsureBackendPoolDeleted(service *v1.Service, backendPoo
 		}
 		// only vmsses in the resource group same as it's in azure config are included
 		if strings.EqualFold(resourceGroupName, fs.ResourceGroup) {
-			if fs.useStandardLoadBalancer() && !fs.EnableMultipleStandardLoadBalancers {
+			if fs.useStandardLoadBalancer() {
 				vmssFlexVMNameMap[nodeName] = nicName
 			} else {
 				if strings.EqualFold(vmssFlexName, vmSetName) {

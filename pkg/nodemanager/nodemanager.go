@@ -82,15 +82,15 @@ var betaToplogyLabels = []labelReconcile{
 	{
 		// Reconcile the beta and the GA zone label using the GA label as
 		// the source of truth
-		primaryKey:            v1.LabelTopologyZone,
-		secondaryKey:          v1.LabelFailureDomainBetaZone,
+		primaryKey:            v1.LabelZoneFailureDomainStable,
+		secondaryKey:          v1.LabelZoneFailureDomain,
 		ensureSecondaryExists: true,
 	},
 	{
 		// Reconcile the beta and the stable region label using the GA label as
 		// the source of truth
-		primaryKey:            v1.LabelTopologyRegion,
-		secondaryKey:          v1.LabelFailureDomainBetaRegion,
+		primaryKey:            v1.LabelZoneRegionStable,
+		secondaryKey:          v1.LabelZoneRegion,
 		ensureSecondaryExists: true,
 	},
 	{
@@ -493,15 +493,15 @@ func (cnc *CloudNodeController) getNodeModifiersFromCloudProvider(ctx context.Co
 		return nil, fmt.Errorf("failed to get zone from cloud provider: %w", err)
 	}
 	if zone.FailureDomain != "" {
-		nodeModifiers = append(nodeModifiers, addCloudNodeLabel(v1.LabelTopologyZone, zone.FailureDomain))
+		nodeModifiers = append(nodeModifiers, addCloudNodeLabel(v1.LabelZoneFailureDomainStable, zone.FailureDomain))
 		if cnc.enableBetaTopologyLabels {
-			nodeModifiers = append(nodeModifiers, addCloudNodeLabel(v1.LabelFailureDomainBetaZone, zone.FailureDomain))
+			nodeModifiers = append(nodeModifiers, addCloudNodeLabel(v1.LabelZoneFailureDomain, zone.FailureDomain))
 		}
 	}
 	if zone.Region != "" {
-		nodeModifiers = append(nodeModifiers, addCloudNodeLabel(v1.LabelTopologyRegion, zone.Region))
+		nodeModifiers = append(nodeModifiers, addCloudNodeLabel(v1.LabelZoneRegionStable, zone.Region))
 		if cnc.enableBetaTopologyLabels {
-			nodeModifiers = append(nodeModifiers, addCloudNodeLabel(v1.LabelFailureDomainBetaRegion, zone.Region))
+			nodeModifiers = append(nodeModifiers, addCloudNodeLabel(v1.LabelZoneRegion, zone.Region))
 		}
 	}
 
