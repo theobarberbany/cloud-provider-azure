@@ -21,7 +21,7 @@ import (
 	"os"
 	"strings"
 
-	azcompute "github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
+	azcompute "github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -110,6 +110,9 @@ var _ = Describe("[StandardLoadBalancer] Standard load balancer", func() {
 			}
 			for _, ipc := range *backendAddressPool.BackendIPConfigurations {
 				if ipc.ID != nil {
+					if utils.IsAutoscalingAKSCluster() && strings.Contains(*ipc.ID, utils.SystemPool) {
+						continue
+					}
 					ipcIDs = append(ipcIDs, *ipc.ID)
 				}
 			}

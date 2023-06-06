@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -38,6 +39,11 @@ const (
 	nodeOSLabel               = "kubernetes.io/os"
 	typeLabel                 = "type"
 	agentpoolLabelKey         = "agentpool"
+
+	NodeModeLabel  = "kubernetes.azure.com/mode"
+	NodeModeSystem = "system"
+	NodeModeUser   = "user"
+	SystemPool     = "systempool"
 
 	// GPUResourceKey is the key of the GPU in the resource map of a node
 	GPUResourceKey = "nvidia.com/gpu"
@@ -63,7 +69,7 @@ func GetNode(cs clientset.Interface, nodeName string) (*v1.Node, error) {
 	return node, nil
 }
 
-// GetAgentNodes obtains the list of agent nodes
+// GetAgentNodes obtains the list of agent nodes excluding system pool Nodes.
 func GetAgentNodes(cs clientset.Interface) ([]v1.Node, error) {
 	nodesList, err := getNodeList(cs)
 	if err != nil {
@@ -71,7 +77,8 @@ func GetAgentNodes(cs clientset.Interface) ([]v1.Node, error) {
 	}
 	ret := make([]v1.Node, 0)
 	for i, node := range nodesList.Items {
-		if !IsControlPlaneNode(&nodesList.Items[i]) && !isVirtualKubeletNode(&nodesList.Items[i]) {
+		if !IsControlPlaneNode(&nodesList.Items[i]) && !isVirtualKubeletNode(&nodesList.Items[i]) &&
+			!IsSystemPoolNode(&nodesList.Items[i]) {
 			ret = append(ret, node)
 		}
 	}
@@ -212,7 +219,8 @@ func WaitAutoScaleNodes(cs clientset.Interface, targetNodeCount int, isScaleDown
 	var nodes []v1.Node
 	var err error
 	poll := 60 * time.Second
-	autoScaleTimeOut := 60 * time.Minute
+	autoScaleTimeOut := 90 * time.Minute
+	nodeConditions := map[string][]v1.NodeCondition{}
 	if err = wait.PollImmediate(poll, autoScaleTimeOut, func() (bool, error) {
 		nodes, err = GetAgentNodes(cs)
 		if err != nil {
@@ -225,16 +233,22 @@ func WaitAutoScaleNodes(cs clientset.Interface, targetNodeCount int, isScaleDown
 			err = fmt.Errorf("Unexpected nil node list")
 			return false, err
 		}
+		nodeConditions = map[string][]v1.NodeCondition{}
+		for _, node := range nodes {
+			nodeConditions[node.Name] = node.Status.Conditions
+		}
 		Logf("Detect %v nodes, target %v", len(nodes), targetNodeCount)
 		if len(nodes) > targetNodeCount && !isScaleDown {
-			Logf("error: more nodes than expected")
+			Logf("error: more nodes than expected, Node conditions: %v", nodeConditions)
 			err = fmt.Errorf("there are more nodes than expected")
 			return false, err
 		}
 		return (targetNodeCount > len(nodes) && isScaleDown) || targetNodeCount == len(nodes), nil
 	}); errors.Is(err, wait.ErrWaitTimeout) {
+		Logf("Node conditions: %v", nodeConditions)
 		return fmt.Errorf("Fail to get target node count in limited time")
 	}
+	Logf("Node conditions: %v", nodeConditions)
 	return err
 }
 
@@ -262,6 +276,22 @@ func isVirtualKubeletNode(node *v1.Node) bool {
 	return false
 }
 
+// IsSystemPoolNode checks if the Node is of system pool when running tests in an AKS autoscaling cluster.
+func IsSystemPoolNode(node *v1.Node) bool {
+	if !IsAutoscalingAKSCluster() {
+		return false
+	}
+	if val, ok := node.Labels[NodeModeLabel]; ok && val == NodeModeSystem {
+		return true
+	}
+	return false
+}
+
+// IsAutoscalingAKSCluster checks if the cluster is an autoscaling AKS one.
+func IsAutoscalingAKSCluster() bool {
+	return os.Getenv(AKSTestCCM) != "" && strings.Contains(os.Getenv(AKSClusterType), "autoscaling")
+}
+
 func LabelNode(cs clientset.Interface, node *v1.Node, label string, isDelete bool) (*v1.Node, error) {
 	if _, ok := node.Labels[label]; ok {
 		if isDelete {
@@ -279,8 +309,12 @@ func LabelNode(cs clientset.Interface, node *v1.Node, label string, isDelete boo
 
 func GetNodepoolNodeMap(nodes *[]v1.Node) map[string][]string {
 	nodepoolNodeMap := make(map[string][]string)
-	for _, node := range *nodes {
+	for i := range *nodes {
+		node := (*nodes)[i]
 		labels := node.ObjectMeta.Labels
+		if IsSystemPoolNode(&node) {
+			continue
+		}
 		if nodepool, ok := labels[agentpoolLabelKey]; ok {
 			if nodepoolNodeMap[nodepool] == nil {
 				nodepoolNodeMap[nodepool] = make([]string, 0)

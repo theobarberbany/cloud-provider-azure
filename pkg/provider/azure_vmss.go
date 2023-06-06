@@ -25,7 +25,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
 
 	v1 "k8s.io/api/core/v1"
@@ -901,8 +901,7 @@ func (ss *ScaleSet) getAgentPoolScaleSets(nodes []*v1.Node) (*[]string, error) {
 // for loadbalancer exists then return the eligible VMSet.
 func (ss *ScaleSet) GetVMSetNames(service *v1.Service, nodes []*v1.Node) (*[]string, error) {
 	hasMode, isAuto, serviceVMSetName := ss.getServiceLoadBalancerMode(service)
-	useSingleSLB := ss.useStandardLoadBalancer() && !ss.EnableMultipleStandardLoadBalancers
-	if !hasMode || useSingleSLB {
+	if !hasMode || ss.useStandardLoadBalancer() {
 		// no mode specified in service annotation or use single SLB mode
 		// default to PrimaryScaleSetName
 		scaleSetNames := &[]string{ss.Config.PrimaryScaleSetName}
@@ -1018,8 +1017,8 @@ func (ss *ScaleSet) GetPrimaryInterface(nodeName string) (network.Interface, err
 	return nic, nil
 }
 
-// getPrimaryNetworkInterfaceConfiguration gets primary network interface configuration for scale set virtual machine.
-func (ss *ScaleSet) getPrimaryNetworkInterfaceConfiguration(networkConfigurations []compute.VirtualMachineScaleSetNetworkConfiguration, nodeName string) (*compute.VirtualMachineScaleSetNetworkConfiguration, error) {
+// getPrimaryNetworkInterfaceConfiguration gets primary network interface configuration for VMSS VM or VMSS.
+func getPrimaryNetworkInterfaceConfiguration(networkConfigurations []compute.VirtualMachineScaleSetNetworkConfiguration, resource string) (*compute.VirtualMachineScaleSetNetworkConfiguration, error) {
 	if len(networkConfigurations) == 1 {
 		return &networkConfigurations[0], nil
 	}
@@ -1031,58 +1030,38 @@ func (ss *ScaleSet) getPrimaryNetworkInterfaceConfiguration(networkConfiguration
 		}
 	}
 
-	return nil, fmt.Errorf("failed to find a primary network configuration for the scale set VM %q", nodeName)
+	return nil, fmt.Errorf("failed to find a primary network configuration for the VMSS VM or VMSS %q", resource)
 }
 
-// getPrimaryNetworkInterfaceConfigurationForScaleSet gets primary network interface configuration for scale set.
-func getPrimaryNetworkInterfaceConfigurationForScaleSet(networkConfigurations []compute.VirtualMachineScaleSetNetworkConfiguration, vmssName string) (*compute.VirtualMachineScaleSetNetworkConfiguration, error) {
-	if len(networkConfigurations) == 1 {
-		return &networkConfigurations[0], nil
-	}
-
-	for idx := range networkConfigurations {
-		networkConfig := &networkConfigurations[idx]
-		if networkConfig.Primary != nil && *networkConfig.Primary {
-			return networkConfig, nil
-		}
-	}
-
-	return nil, fmt.Errorf("failed to find a primary network configuration for the scale set %q", vmssName)
-}
-
-func getPrimaryIPConfigFromVMSSNetworkConfig(config *compute.VirtualMachineScaleSetNetworkConfiguration) (*compute.VirtualMachineScaleSetIPConfiguration, error) {
+func getPrimaryIPConfigFromVMSSNetworkConfig(config *compute.VirtualMachineScaleSetNetworkConfiguration, backendPoolID, resource string) (*compute.VirtualMachineScaleSetIPConfiguration, error) {
 	ipConfigurations := *config.IPConfigurations
-	if len(ipConfigurations) == 1 {
-		return &ipConfigurations[0], nil
-	}
+	isIPv6 := isBackendPoolIPv6(backendPoolID)
 
-	for idx := range ipConfigurations {
-		ipConfig := &ipConfigurations[idx]
-		if ipConfig.Primary != nil && *ipConfig.Primary {
-			return ipConfig, nil
+	if !isIPv6 {
+		// There should be exactly one primary IP config.
+		// https://learn.microsoft.com/en-us/azure/virtual-network/ip-services/virtual-network-network-interface-addresses?tabs=nic-address-portal#ip-configurations
+		if len(ipConfigurations) == 1 {
+			return &ipConfigurations[0], nil
 		}
-	}
-
-	return nil, fmt.Errorf("failed to find a primary IP configuration")
-}
-
-func getConfigForScaleSetByIPFamily(config *compute.VirtualMachineScaleSetNetworkConfiguration, nodeName string, IPv6 bool) (*compute.VirtualMachineScaleSetIPConfiguration, error) {
-	ipConfigurations := *config.IPConfigurations
-
-	var ipVersion compute.IPVersion
-	if IPv6 {
-		ipVersion = compute.IPv6
+		for idx := range ipConfigurations {
+			ipConfig := &ipConfigurations[idx]
+			if ipConfig.Primary != nil && *ipConfig.Primary {
+				return ipConfig, nil
+			}
+		}
 	} else {
-		ipVersion = compute.IPv4
-	}
-	for idx := range ipConfigurations {
-		ipConfig := &ipConfigurations[idx]
-		if ipConfig.PrivateIPAddressVersion == ipVersion {
-			return ipConfig, nil
+		// For IPv6 or dualstack service, we need to pick the right IP configuration based on the cluster ip family
+		// IPv6 configuration is only supported as non-primary, so we need to fetch the ip configuration where the
+		// privateIPAddressVersion matches the clusterIP family
+		for idx := range ipConfigurations {
+			ipConfig := &ipConfigurations[idx]
+			if ipConfig.PrivateIPAddressVersion == compute.IPv6 {
+				return ipConfig, nil
+			}
 		}
 	}
 
-	return nil, fmt.Errorf("failed to find a IPconfiguration(IPv6=%v) for the scale set VM %q", IPv6, nodeName)
+	return nil, fmt.Errorf("failed to find a primary IP configuration (IPv6=%t) for the VMSS VM or VMSS %q", isIPv6, resource)
 }
 
 // EnsureHostInPool ensures the given VM's Primary NIC's Primary IP Configuration is
@@ -1113,17 +1092,6 @@ func (ss *ScaleSet) EnsureHostInPool(service *v1.Service, nodeName types.NodeNam
 	if !ss.useStandardLoadBalancer() {
 		// need to check the vmSet name when using the basic LB
 		needCheck = true
-	} else if ss.EnableMultipleStandardLoadBalancers {
-		// need to check the vmSet name when using multiple standard LBs
-		needCheck = true
-
-		// ensure the vm that is supposed to share the primary SLB in the backendpool of the primary SLB
-		if strings.EqualFold(ss.GetPrimaryVMSetName(), vmSetNameOfLB) &&
-			ss.getVMSetNamesSharingPrimarySLB().Has(strings.ToLower(vm.VMSSName)) {
-			klog.V(4).Infof("EnsureHostInPool: the vm %s in the vmSet %s is supposed to share the primary SLB",
-				nodeName, vm.VMSSName)
-			needCheck = false
-		}
 	}
 
 	if vmSetNameOfLB != "" && needCheck && !strings.EqualFold(vmSetNameOfLB, vm.VMSSName) {
@@ -1139,28 +1107,15 @@ func (ss *ScaleSet) EnsureHostInPool(service *v1.Service, nodeName types.NodeNam
 	}
 
 	networkInterfaceConfigurations := *vm.VirtualMachineScaleSetVMProperties.NetworkProfileConfiguration.NetworkInterfaceConfigurations
-	primaryNetworkInterfaceConfiguration, err := ss.getPrimaryNetworkInterfaceConfiguration(networkInterfaceConfigurations, vmName)
+	primaryNetworkInterfaceConfiguration, err := getPrimaryNetworkInterfaceConfiguration(networkInterfaceConfigurations, vmName)
 	if err != nil {
 		return "", "", "", nil, err
 	}
 
-	var primaryIPConfiguration *compute.VirtualMachineScaleSetIPConfiguration
-	ipv6 := isBackendPoolIPv6(backendPoolID)
 	// Find primary network interface configuration.
-	if !ss.Cloud.ipv6DualStackEnabled && !ipv6 {
-		// Find primary IP configuration.
-		primaryIPConfiguration, err = getPrimaryIPConfigFromVMSSNetworkConfig(primaryNetworkInterfaceConfiguration)
-		if err != nil {
-			return "", "", "", nil, err
-		}
-	} else {
-		// For IPv6 or dualstack service, we need to pick the right IP configuration based on the cluster ip family
-		// IPv6 configuration is only supported as non-primary, so we need to fetch the ip configuration where the
-		// privateIPAddressVersion matches the clusterIP family
-		primaryIPConfiguration, err = getConfigForScaleSetByIPFamily(primaryNetworkInterfaceConfiguration, vmName, ipv6)
-		if err != nil {
-			return "", "", "", nil, err
-		}
+	primaryIPConfiguration, err := getPrimaryIPConfigFromVMSSNetworkConfig(primaryNetworkInterfaceConfiguration, backendPoolID, vmName)
+	if err != nil {
+		return "", "", "", nil, err
 	}
 
 	// Update primary IP configuration's LoadBalancerBackendAddressPools.
@@ -1249,7 +1204,7 @@ func (ss *ScaleSet) ensureVMSSInPool(service *v1.Service, nodes []*v1.Node, back
 
 	// the single standard load balancer supports multiple vmss in its backend while
 	// multiple standard load balancers and the basic load balancer doesn't
-	if ss.useStandardLoadBalancer() && !ss.EnableMultipleStandardLoadBalancers {
+	if ss.useStandardLoadBalancer() {
 		for _, node := range nodes {
 			if ss.excludeMasterNodesFromStandardLB() && isControlPlaneNode(node) {
 				continue
@@ -1314,24 +1269,14 @@ func (ss *ScaleSet) ensureVMSSInPool(service *v1.Service, nodes []*v1.Node, back
 			continue
 		}
 		vmssNIC := *vmss.VirtualMachineProfile.NetworkProfile.NetworkInterfaceConfigurations
-		primaryNIC, err := getPrimaryNetworkInterfaceConfigurationForScaleSet(vmssNIC, vmssName)
+		primaryNIC, err := getPrimaryNetworkInterfaceConfiguration(vmssNIC, vmssName)
 		if err != nil {
 			return err
 		}
-		var primaryIPConfig *compute.VirtualMachineScaleSetIPConfiguration
-		ipv6 := isBackendPoolIPv6(backendPoolID)
 		// Find primary network interface configuration.
-		if !ss.Cloud.ipv6DualStackEnabled && !ipv6 {
-			// Find primary IP configuration.
-			primaryIPConfig, err = getPrimaryIPConfigFromVMSSNetworkConfig(primaryNIC)
-			if err != nil {
-				return err
-			}
-		} else {
-			primaryIPConfig, err = getConfigForScaleSetByIPFamily(primaryNIC, "", ipv6)
-			if err != nil {
-				return err
-			}
+		primaryIPConfig, err := getPrimaryIPConfigFromVMSSNetworkConfig(primaryNIC, backendPoolID, vmssName)
+		if err != nil {
+			return err
 		}
 
 		loadBalancerBackendAddressPools := []compute.SubResource{}
@@ -1598,47 +1543,31 @@ func (ss *ScaleSet) ensureBackendPoolDeletedFromNode(nodeName string, backendPoo
 
 	// Find primary network interface configuration.
 	if vm.VirtualMachineScaleSetVMProperties.NetworkProfileConfiguration.NetworkInterfaceConfigurations == nil {
-		klog.V(4).Infof("EnsureHostInPool: cannot obtain the primary network interface configuration, of vm %s, "+
+		klog.V(4).Infof("ensureBackendPoolDeletedFromNode: cannot obtain the primary network interface configuration, of vm %s, "+
 			"probably because the vm's being deleted", nodeName)
 		return "", "", "", nil, nil
 	}
 	networkInterfaceConfigurations := *vm.VirtualMachineScaleSetVMProperties.NetworkProfileConfiguration.NetworkInterfaceConfigurations
-	primaryNetworkInterfaceConfiguration, err := ss.getPrimaryNetworkInterfaceConfiguration(networkInterfaceConfigurations, nodeName)
+	primaryNetworkInterfaceConfiguration, err := getPrimaryNetworkInterfaceConfiguration(networkInterfaceConfigurations, nodeName)
 	if err != nil {
 		return "", "", "", nil, err
 	}
 
-	// Find primary IP configuration.
-	primaryIPConfiguration, err := getPrimaryIPConfigFromVMSSNetworkConfig(primaryNetworkInterfaceConfiguration)
-	if err != nil {
-		return "", "", "", nil, err
-	}
-	if primaryIPConfiguration.LoadBalancerBackendAddressPools == nil || len(*primaryIPConfiguration.LoadBalancerBackendAddressPools) == 0 {
-		return "", "", "", nil, nil
-	}
-
-	// Construct new loadBalancerBackendAddressPools and remove backendAddressPools from primary IP configuration.
-	existingBackendPools := *primaryIPConfiguration.LoadBalancerBackendAddressPools
-	newBackendPools := []compute.SubResource{}
-	foundPool := false
-	for i := len(existingBackendPools) - 1; i >= 0; i-- {
-		curPool := existingBackendPools[i]
-		for _, backendPoolID := range backendPoolIDs {
-			if strings.EqualFold(backendPoolID, *curPool.ID) {
-				klog.V(10).Infof("ensureBackendPoolDeletedFromNode gets unwanted backend pool %q for node %s", backendPoolID, nodeName)
-				foundPool = true
-				newBackendPools = append(existingBackendPools[:i], existingBackendPools[i+1:]...)
-			}
+	foundTotal := false
+	for _, backendPoolID := range backendPoolIDs {
+		found, err := deleteBackendPoolFromIPConfig("ensureBackendPoolDeletedFromNode", backendPoolID, nodeName, primaryNetworkInterfaceConfiguration)
+		if err != nil {
+			return "", "", "", nil, err
+		}
+		if found {
+			foundTotal = true
 		}
 	}
-
-	// Pool not found, assume it has been already removed.
-	if !foundPool {
+	if !foundTotal {
 		return "", "", "", nil, nil
 	}
 
 	// Compose a new vmssVM with added backendPoolID.
-	primaryIPConfiguration.LoadBalancerBackendAddressPools = &newBackendPools
 	newVM := &compute.VirtualMachineScaleSetVM{
 		Location: &vm.Location,
 		VirtualMachineScaleSetVMProperties: &compute.VirtualMachineScaleSetVMProperties{
@@ -1770,7 +1699,7 @@ func (ss *ScaleSet) ensureBackendPoolDeletedFromVmssUniform(backendPoolIDs []str
 
 	vmssNamesMap := make(map[string]bool)
 	// the standard load balancer supports multiple vmss in its backend while the basic sku doesn't
-	if ss.useStandardLoadBalancer() && !ss.EnableMultipleStandardLoadBalancers {
+	if ss.useStandardLoadBalancer() {
 		cachedUniform, err := ss.vmssCache.Get(consts.VMSSKey, azcache.CacheReadTypeDefault)
 		if err != nil {
 			klog.Errorf("ensureBackendPoolDeletedFromVMSS: failed to get vmss uniform from cache: %v", err)
@@ -1803,29 +1732,36 @@ func (ss *ScaleSet) ensureBackendPoolDeletedFromVmssUniform(backendPoolIDs []str
 				return true
 			}
 			vmssNIC := *vmss.VirtualMachineProfile.NetworkProfile.NetworkInterfaceConfigurations
-			primaryNIC, err := getPrimaryNetworkInterfaceConfigurationForScaleSet(vmssNIC, pointer.StringDeref(vmss.Name, ""))
+			primaryNIC, err := getPrimaryNetworkInterfaceConfiguration(vmssNIC, pointer.StringDeref(vmss.Name, ""))
 			if err != nil {
 				klog.Errorf("ensureBackendPoolDeletedFromVMSS: failed to get the primary network interface config of the VMSS %s: %v", pointer.StringDeref(vmss.Name, ""), err)
 				errorList = append(errorList, err)
 				return true
 			}
-			primaryIPConfig, err := getPrimaryIPConfigFromVMSSNetworkConfig(primaryNIC)
-			if err != nil {
-				klog.Errorf("ensureBackendPoolDeletedFromVMSS: failed to the primary IP config from the VMSS %s's network config : %v", pointer.StringDeref(vmss.Name, ""), err)
-				errorList = append(errorList, err)
-				return true
-			}
-			loadBalancerBackendAddressPools := make([]compute.SubResource, 0)
-			if primaryIPConfig.LoadBalancerBackendAddressPools != nil {
-				loadBalancerBackendAddressPools = *primaryIPConfig.LoadBalancerBackendAddressPools
-			}
-			for _, loadBalancerBackendAddressPool := range loadBalancerBackendAddressPools {
-				klog.V(4).Infof("ensureBackendPoolDeletedFromVMSS: loadBalancerBackendAddressPool (%s) on vmss (%s)", pointer.StringDeref(loadBalancerBackendAddressPool.ID, ""), pointer.StringDeref(vmss.Name, ""))
-				for _, backendPoolID := range backendPoolIDs {
+
+			handleBackendPool := func(backendPoolID string) bool {
+				primaryIPConfig, err := getPrimaryIPConfigFromVMSSNetworkConfig(primaryNIC, backendPoolID, pointer.StringDeref(vmss.Name, ""))
+				if err != nil {
+					klog.Errorf("ensureBackendPoolDeletedFromVMSS: failed to find the primary IP config from the VMSS %s's network config : %v", pointer.StringDeref(vmss.Name, ""), err)
+					errorList = append(errorList, err)
+					return true
+				}
+				loadBalancerBackendAddressPools := make([]compute.SubResource, 0)
+				if primaryIPConfig.LoadBalancerBackendAddressPools != nil {
+					loadBalancerBackendAddressPools = *primaryIPConfig.LoadBalancerBackendAddressPools
+				}
+				for _, loadBalancerBackendAddressPool := range loadBalancerBackendAddressPools {
+					klog.V(4).Infof("ensureBackendPoolDeletedFromVMSS: loadBalancerBackendAddressPool (%s) on vmss (%s)", pointer.StringDeref(loadBalancerBackendAddressPool.ID, ""), pointer.StringDeref(vmss.Name, ""))
 					if strings.EqualFold(pointer.StringDeref(loadBalancerBackendAddressPool.ID, ""), backendPoolID) {
 						klog.V(4).Infof("ensureBackendPoolDeletedFromVMSS: found vmss %s with backend pool %s, removing it", pointer.StringDeref(vmss.Name, ""), backendPoolID)
 						vmssNamesMap[pointer.StringDeref(vmss.Name, "")] = true
 					}
+				}
+				return true
+			}
+			for _, backendPoolID := range backendPoolIDs {
+				if !handleBackendPool(backendPoolID) {
+					return false
 				}
 			}
 
@@ -2145,6 +2081,35 @@ func (ss *ScaleSet) GetNodeCIDRMasksByProviderID(providerID string) (int, int, e
 	return ipv4Mask, ipv6Mask, nil
 }
 
+// deleteBackendPoolFromIPConfig deletes the backend pool from the IP config.
+func deleteBackendPoolFromIPConfig(msg, backendPoolID, resource string, primaryNIC *compute.VirtualMachineScaleSetNetworkConfiguration) (bool, error) {
+	primaryIPConfig, err := getPrimaryIPConfigFromVMSSNetworkConfig(primaryNIC, backendPoolID, resource)
+	if err != nil {
+		klog.Errorf("%s: failed to get the primary IP config from the VMSS %q's network config: %v", msg, resource, err)
+		return false, err
+	}
+	loadBalancerBackendAddressPools := []compute.SubResource{}
+	if primaryIPConfig.LoadBalancerBackendAddressPools != nil {
+		loadBalancerBackendAddressPools = *primaryIPConfig.LoadBalancerBackendAddressPools
+	}
+
+	var found bool
+	var newBackendPools []compute.SubResource
+	for i := len(loadBalancerBackendAddressPools) - 1; i >= 0; i-- {
+		curPool := loadBalancerBackendAddressPools[i]
+		if strings.EqualFold(backendPoolID, *curPool.ID) {
+			klog.V(10).Infof("%s gets unwanted backend pool %q for VMSS OR VMSS VM %q", msg, backendPoolID, resource)
+			found = true
+			newBackendPools = append(loadBalancerBackendAddressPools[:i], loadBalancerBackendAddressPools[i+1:]...)
+		}
+	}
+	if !found {
+		return false, nil
+	}
+	primaryIPConfig.LoadBalancerBackendAddressPools = &newBackendPools
+	return true, nil
+}
+
 // EnsureBackendPoolDeletedFromVMSets ensures the loadBalancer backendAddressPools deleted from the specified VMSS
 func (ss *ScaleSet) EnsureBackendPoolDeletedFromVMSets(vmssNamesMap map[string]bool, backendPoolIDs []string) error {
 	vmssUpdaters := make([]func() error, 0, len(vmssNamesMap))
@@ -2169,42 +2134,29 @@ func (ss *ScaleSet) EnsureBackendPoolDeletedFromVMSets(vmssNamesMap map[string]b
 			continue
 		}
 		vmssNIC := *vmss.VirtualMachineProfile.NetworkProfile.NetworkInterfaceConfigurations
-		primaryNIC, err := getPrimaryNetworkInterfaceConfigurationForScaleSet(vmssNIC, vmssName)
+		primaryNIC, err := getPrimaryNetworkInterfaceConfiguration(vmssNIC, vmssName)
 		if err != nil {
 			klog.Errorf("EnsureBackendPoolDeletedFromVMSets: failed to get the primary network interface config of the VMSS %s: %v", vmssName, err)
 			errors = append(errors, err)
 			continue
 		}
-		primaryIPConfig, err := getPrimaryIPConfigFromVMSSNetworkConfig(primaryNIC)
-		if err != nil {
-			klog.Errorf("EnsureBackendPoolDeletedFromVMSets: failed to the primary IP config from the VMSS %s's network config : %v", vmssName, err)
-			errors = append(errors, err)
-			continue
-		}
-		loadBalancerBackendAddressPools := []compute.SubResource{}
-		if primaryIPConfig.LoadBalancerBackendAddressPools != nil {
-			loadBalancerBackendAddressPools = *primaryIPConfig.LoadBalancerBackendAddressPools
-		}
-
-		var found bool
-		var newBackendPools []compute.SubResource
-		for i := len(loadBalancerBackendAddressPools) - 1; i >= 0; i-- {
-			curPool := loadBalancerBackendAddressPools[i]
-			for _, backendPoolID := range backendPoolIDs {
-				if strings.EqualFold(backendPoolID, *curPool.ID) {
-					klog.V(10).Infof("EnsureBackendPoolDeletedFromVMSets gets unwanted backend pool %q for VMSS %s", backendPoolID, vmssName)
-					found = true
-					newBackendPools = append(loadBalancerBackendAddressPools[:i], loadBalancerBackendAddressPools[i+1:]...)
-				}
+		foundTotal := false
+		for _, backendPoolID := range backendPoolIDs {
+			found, err := deleteBackendPoolFromIPConfig("EnsureBackendPoolDeletedFromVMSets", backendPoolID, vmssName, primaryNIC)
+			if err != nil {
+				errors = append(errors, err)
+				continue
+			}
+			if found {
+				foundTotal = true
 			}
 		}
-		if !found {
+		if !foundTotal {
 			continue
 		}
 
 		vmssUpdaters = append(vmssUpdaters, func() error {
 			// Compose a new vmss with added backendPoolID.
-			primaryIPConfig.LoadBalancerBackendAddressPools = &newBackendPools
 			newVMSS := compute.VirtualMachineScaleSet{
 				Location: vmss.Location,
 				VirtualMachineScaleSetProperties: &compute.VirtualMachineScaleSetProperties{

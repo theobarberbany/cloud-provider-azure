@@ -22,7 +22,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-03-01/compute"
+	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
 
@@ -65,6 +65,7 @@ func TestCreateManagedDisk(t *testing.T) {
 		diskEncryptionType  string
 		subscriptionID      string
 		resouceGroup        string
+		publicNetworkAccess compute.PublicNetworkAccess
 		networkAccessPolicy compute.NetworkAccessPolicy
 		diskAccessID        *string
 		expectedDiskID      string
@@ -88,7 +89,7 @@ func TestCreateManagedDisk(t *testing.T) {
 			desc:                "disk Id and no error shall be returned if everything is good with PremiumV2LRS storage account",
 			diskID:              disk1ID,
 			diskName:            disk1Name,
-			storageAccountType:  consts.PremiumV2LRS,
+			storageAccountType:  compute.PremiumV2LRS,
 			diskIOPSReadWrite:   "100",
 			diskMBPSReadWrite:   "100",
 			diskEncryptionSetID: goodDiskEncryptionSetID,
@@ -100,7 +101,7 @@ func TestCreateManagedDisk(t *testing.T) {
 			desc:                "disk Id and no error shall be returned if everything is good with PremiumV2LRS storage account",
 			diskID:              disk1ID,
 			diskName:            disk1Name,
-			storageAccountType:  consts.PremiumV2LRS,
+			storageAccountType:  compute.PremiumV2LRS,
 			diskIOPSReadWrite:   "",
 			diskMBPSReadWrite:   "",
 			diskEncryptionSetID: goodDiskEncryptionSetID,
@@ -204,6 +205,7 @@ func TestCreateManagedDisk(t *testing.T) {
 			storageAccountType:  compute.StandardLRS,
 			diskEncryptionSetID: goodDiskEncryptionSetID,
 			networkAccessPolicy: compute.DenyAll,
+			publicNetworkAccess: compute.Disabled,
 			expectedDiskID:      disk1ID,
 			existedDisk:         compute.Disk{ID: pointer.String(disk1ID), Name: pointer.String(disk1Name), DiskProperties: &compute.DiskProperties{Encryption: &compute.Encryption{DiskEncryptionSetID: &goodDiskEncryptionSetID, Type: compute.EncryptionTypeEncryptionAtRestWithCustomerKey}, ProvisioningState: pointer.String("Succeeded")}, Tags: testTags},
 			expectedErr:         false,
@@ -216,6 +218,7 @@ func TestCreateManagedDisk(t *testing.T) {
 			diskEncryptionSetID: goodDiskEncryptionSetID,
 			diskEncryptionType:  "EncryptionAtRestWithCustomerKey",
 			networkAccessPolicy: compute.AllowAll,
+			publicNetworkAccess: compute.Enabled,
 			expectedDiskID:      disk1ID,
 			existedDisk:         compute.Disk{ID: pointer.String(disk1ID), Name: pointer.String(disk1Name), DiskProperties: &compute.DiskProperties{Encryption: &compute.Encryption{DiskEncryptionSetID: &goodDiskEncryptionSetID, Type: compute.EncryptionTypeEncryptionAtRestWithCustomerKey}, ProvisioningState: pointer.String("Succeeded")}, Tags: testTags},
 			expectedErr:         false,
@@ -274,6 +277,7 @@ func TestCreateManagedDisk(t *testing.T) {
 			DiskEncryptionType:  test.diskEncryptionType,
 			MaxShares:           maxShare,
 			NetworkAccessPolicy: test.networkAccessPolicy,
+			PublicNetworkAccess: test.publicNetworkAccess,
 			DiskAccessID:        test.diskAccessID,
 			SubscriptionID:      test.subscriptionID,
 		}

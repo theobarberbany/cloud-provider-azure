@@ -10,6 +10,8 @@ node_modules/
 public/
 !vendor/github.com/AzureAD/microsoft-authentication-library-for-go/apps/public
 site/public/
+site/resources/
+
 
 # bazel
 /bazel-bin
@@ -34,3 +36,5 @@ chart_verify/
 _artifacts
 _kubeconfig
 _rundir
+
+site/.hugo_build.lock
