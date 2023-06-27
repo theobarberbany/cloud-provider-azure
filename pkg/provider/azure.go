@@ -1150,7 +1150,7 @@ func (az *Cloud) updateNodeCaches(prevNode, newNode *v1.Node) {
 		case hasExcludeBalancerLabel:
 			az.excludeLoadBalancerNodes.Insert(newNode.ObjectMeta.Name)
 
-		case !isNodeReady(newNode) && nodemanager.GetCloudTaint(newNode.Spec.Taints) == nil:
+		case !isNodeReady(newNode) && !isNodeMaster(newNode) && nodemanager.GetCloudTaint(newNode.Spec.Taints) == nil:
 			// If not in ready state and not a newly created node, add to excludeLoadBalancerNodes cache.
 			// New nodes (tainted with "node.cloudprovider.kubernetes.io/uninitialized") should not be
 			// excluded from load balancers regardless of their state, so as to reduce the number of
@@ -1304,5 +1304,16 @@ func isNodeReady(node *v1.Node) bool {
 			return true
 		}
 	}
+	return false
+}
+
+func isNodeMaster(node *v1.Node) bool {
+	labels := node.GetLabels()
+	for l := range labels {
+		if l == "node-role.kubernetes.io/master" || l == "node-role.kubernetes.io/control-plane" {
+			return true
+		}
+	}
+
 	return false
 }
