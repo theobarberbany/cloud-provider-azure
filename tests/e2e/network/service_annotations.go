@@ -140,7 +140,7 @@ var _ = Describe("Service with annotation", Label(utils.TestSuiteLabelServiceAnn
 		// 1. Create a Service with managed PIP and check connectivity with DNS
 		// 2. Delete the Service
 		// 3. Create a Service with user assigned PIP
-		// 4. Delete the Servcie and check tags
+		// 4. Delete the Service and check tags
 		// 5. Create a Service with different name
 		// 6. Update the Service with new tag
 		By("Create a Service with managed PIP")
@@ -610,14 +610,9 @@ var _ = Describe("Service with annotation", Label(utils.TestSuiteLabelServiceAnn
 
 		By("Creating a service referring to the first pip")
 		annotation := map[string]string{}
-		// TODO: dual-stack
-		if utils.DualstackSupported {
-			if v4Enabled {
-				annotation[consts.ServiceAnnotationPIPNameDualStack[false]] = pipNames1[false]
-			}
-			if v6Enabled {
-				annotation[consts.ServiceAnnotationPIPNameDualStack[true]] = pipNames1[true]
-			}
+		if tc.IPFamily == utils.DualStack {
+			annotation[consts.ServiceAnnotationPIPNameDualStack[false]] = pipNames1[false]
+			annotation[consts.ServiceAnnotationPIPNameDualStack[true]] = pipNames1[true]
 		} else {
 			annotation[consts.ServiceAnnotationPIPNameDualStack[false]] = pipNames1[tc.IPFamily == utils.IPv6]
 		}
@@ -638,13 +633,9 @@ var _ = Describe("Service with annotation", Label(utils.TestSuiteLabelServiceAnn
 		By("Updating the service to refer to the second service")
 		service, err = cs.CoreV1().Services(ns.Name).Get(context.TODO(), serviceName, metav1.GetOptions{})
 		Expect(err).NotTo(HaveOccurred())
-		if utils.DualstackSupported {
-			if v4Enabled {
-				service.Annotations[consts.ServiceAnnotationPIPNameDualStack[false]] = pipNames2[false]
-			}
-			if v6Enabled {
-				service.Annotations[consts.ServiceAnnotationPIPNameDualStack[true]] = pipNames2[true]
-			}
+		if tc.IPFamily == utils.DualStack {
+			service.Annotations[consts.ServiceAnnotationPIPNameDualStack[false]] = pipNames2[false]
+			service.Annotations[consts.ServiceAnnotationPIPNameDualStack[true]] = pipNames2[true]
 		} else {
 			service.Annotations[consts.ServiceAnnotationPIPNameDualStack[false]] = pipNames2[tc.IPFamily == utils.IPv6]
 		}
@@ -707,8 +698,7 @@ var _ = Describe("Service with annotation", Label(utils.TestSuiteLabelServiceAnn
 		{
 			annotation := map[string]string{}
 			for isIPv6, id := range prefixIDs1 {
-				// TODO: Update after dual-stack implementation finishes
-				if utils.DualstackSupported {
+				if tc.IPFamily == utils.DualStack {
 					annotation[consts.ServiceAnnotationPIPPrefixIDDualStack[isIPv6]] = id
 				} else {
 					annotation[consts.ServiceAnnotationPIPPrefixIDDualStack[false]] = id
@@ -745,7 +735,7 @@ var _ = Describe("Service with annotation", Label(utils.TestSuiteLabelServiceAnn
 			Expect(err).NotTo(HaveOccurred())
 			for isIPv6, id := range prefixIDs2 {
 				// TODO: Update after dual-stack implementation finishes
-				if utils.DualstackSupported {
+				if tc.IPFamily == utils.DualStack {
 					service.Annotations[consts.ServiceAnnotationPIPPrefixIDDualStack[isIPv6]] = id
 				} else {
 					service.Annotations[consts.ServiceAnnotationPIPPrefixIDDualStack[false]] = id
@@ -838,24 +828,82 @@ var _ = Describe("Service with annotation", Label(utils.TestSuiteLabelServiceAnn
 		Expect(err).NotTo(HaveOccurred())
 
 		By("Validating health probe configs")
-		var numberOfProbes *int32
-		var intervalInSeconds *int32
 		for _, probe := range targetProbes {
 			if probe.ProbeThreshold != nil {
-				numberOfProbes = probe.ProbeThreshold
+				utils.Logf("Validating health probe config numberOfProbes")
+				Expect(*probe.ProbeThreshold).To(Equal(int32(3)))
 			}
 			if probe.IntervalInSeconds != nil {
-				intervalInSeconds = probe.IntervalInSeconds
+				utils.Logf("Validating health probe config intervalInSeconds")
+				Expect(*probe.IntervalInSeconds).To(Equal(int32(10)))
 			}
+			Expect(probe.Protocol).To(Equal(network.ProbeProtocolHTTP))
 		}
-		utils.Logf("Validating health probe config numberOfProbes")
-		Expect(*numberOfProbes).To(Equal(int32(3)))
-		utils.Logf("Validating health probe config intervalInSeconds")
-		Expect(*intervalInSeconds).To(Equal(int32(10)))
-		utils.Logf("Validating health probe config protocol")
-		Expect(len(targetProbes)).To(Equal(expectedTargetProbesCount))
-		for _, targetProbe := range targetProbes {
-			Expect(targetProbe.Protocol).To(Equal(network.ProbeProtocolHTTP))
+
+		By("Changing ExternalTrafficPolicy of the service to Local")
+		expectedTargetProbesCount = 1
+		var service *v1.Service
+		utils.Logf("Updating service " + serviceName + " in namespace " + ns.Name)
+		retryErr := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			service, err = cs.CoreV1().Services(ns.Name).Get(context.TODO(), serviceName, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			service.Spec.ExternalTrafficPolicy = v1.ServiceExternalTrafficPolicyTypeLocal
+			_, err = cs.CoreV1().Services(ns.Name).Update(context.TODO(), service, metav1.UpdateOptions{})
+			return err
+		})
+		Expect(retryErr).NotTo(HaveOccurred())
+		utils.Logf("Successfully updated LoadBalancer service " + serviceName + " in namespace " + ns.Name)
+
+		By("Getting updated service object from server")
+		retryErr = retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			service, err = cs.CoreV1().Services(ns.Name).Get(context.TODO(), serviceName, metav1.GetOptions{})
+			if err != nil {
+				return err
+			}
+			if service.Spec.HealthCheckNodePort == 0 {
+				return fmt.Errorf("service HealthCheckNodePort is not updated")
+			}
+			return nil
+		})
+		Expect(retryErr).NotTo(HaveOccurred())
+
+		err = wait.PollImmediate(5*time.Second, 60*time.Second, func() (bool, error) {
+			lb = getAzureLoadBalancerFromPIP(tc, publicIPs[0], tc.GetResourceGroup(), "")
+			targetProbes = []*network.Probe{}
+			for i := range *lb.LoadBalancerPropertiesFormat.Probes {
+				probe := (*lb.LoadBalancerPropertiesFormat.Probes)[i]
+				utils.Logf("One probe of LB is %q", *probe.Name)
+				probeSplit := strings.Split(*probe.Name, "-")
+				Expect(len(probeSplit)).NotTo(Equal(0))
+				probeSplitID := probeSplit[0]
+				if len(probeSplit) > 1 &&
+					(probeSplit[len(probeSplit)-1] == "IPv4" || probeSplit[len(probeSplit)-1] == "IPv6") {
+					probeSplitID += "-" + probeSplit[len(probeSplit)-1]
+				}
+				for _, id := range ids {
+					if id == probeSplitID {
+						targetProbes = append(targetProbes, &probe)
+					}
+				}
+			}
+
+			return len(targetProbes) == expectedTargetProbesCount, nil
+		})
+		Expect(err).NotTo(HaveOccurred())
+
+		By("Validating health probe configs")
+		for _, probe := range targetProbes {
+			if probe.ProbeThreshold != nil {
+				utils.Logf("Validating health probe config numberOfProbes")
+				Expect(*probe.ProbeThreshold).To(Equal(int32(5)))
+			}
+			if probe.IntervalInSeconds != nil {
+				utils.Logf("Validating health probe config intervalInSeconds")
+				Expect(*probe.IntervalInSeconds).To(Equal(int32(15)))
+			}
+			Expect(probe.Protocol).To(Equal(network.ProbeProtocolHTTP))
 		}
 	})
 
@@ -893,6 +941,7 @@ var _ = Describe("Service with annotation", Label(utils.TestSuiteLabelServiceAnn
 
 		var lb *network.LoadBalancer
 		var targetProbes []*network.Probe
+		// There should be no other Services besides the one in this test or the check below will fail.
 		expectedTargetProbesCount := 1
 		if tc.IPFamily == utils.DualStack {
 			expectedTargetProbesCount = 2
@@ -1438,9 +1487,13 @@ func getAzureLoadBalancerFromPIP(tc *utils.AzureTestClient, pip, pipResourceGrou
 	return &lb
 }
 
-func createAndExposeDefaultServiceWithAnnotation(cs clientset.Interface, ipFamily utils.IPFamily, serviceName, nsName string, labels, annotation map[string]string, ports []v1.ServicePort) []string {
+func createAndExposeDefaultServiceWithAnnotation(cs clientset.Interface, ipFamily utils.IPFamily, serviceName, nsName string, labels, annotation map[string]string, ports []v1.ServicePort, customizeFuncs ...func(*v1.Service) error) []string {
 	utils.Logf("Creating service " + serviceName + " in namespace " + nsName)
 	service := utils.CreateLoadBalancerServiceManifest(serviceName, annotation, labels, nsName, ports)
+	for _, customizeFunc := range customizeFuncs {
+		err := customizeFunc(service)
+		Expect(err).NotTo(HaveOccurred())
+	}
 	_, err := cs.CoreV1().Services(nsName).Create(context.TODO(), service, metav1.CreateOptions{})
 	Expect(err).NotTo(HaveOccurred())
 	utils.Logf("Successfully created LoadBalancer service " + serviceName + " in namespace " + nsName)
