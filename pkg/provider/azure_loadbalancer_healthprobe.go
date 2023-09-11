@@ -19,7 +19,6 @@ package provider
 import (
 	"fmt"
 	"strconv"
-
 	"strings"
 
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
@@ -69,22 +68,20 @@ func (az *Cloud) buildHealthProbeRulesForPort(serviceManifest *v1.Service, port 
 		}
 	}
 
-	// 4. Finally, if protocol is still nil, default to HTTP
+	// 4. Finally, if protocol is still nil, default to TCP
 	if protocol == nil {
-		protocol = pointer.String(string(network.ProtocolHTTP))
+		protocol = pointer.String(string(network.ProtocolTCP))
 	}
 
 	*protocol = strings.TrimSpace(*protocol)
 	switch {
 	case strings.EqualFold(*protocol, string(network.ProtocolTCP)):
 		properties.Protocol = network.ProbeProtocolTCP
-		properties.Port = &port.NodePort
 	case strings.EqualFold(*protocol, string(network.ProtocolHTTPS)):
 		//HTTPS probe is only supported in standard loadbalancer
 		//For backward compatibility,when unsupported protocol is used, fall back to tcp protocol in basic lb mode instead
 		if !az.useStandardLoadBalancer() {
 			properties.Protocol = network.ProbeProtocolTCP
-			properties.Port = &port.NodePort
 		} else {
 			properties.Protocol = network.ProbeProtocolHTTPS
 		}
@@ -93,41 +90,31 @@ func (az *Cloud) buildHealthProbeRulesForPort(serviceManifest *v1.Service, port 
 	default:
 		//For backward compatibility,when unsupported protocol is used, fall back to tcp protocol in basic lb mode instead
 		properties.Protocol = network.ProbeProtocolTCP
-		properties.Port = &port.NodePort
 	}
 
 	// Lookup or Override Health Probe Port
-	if properties.Port == nil {
-		properties.Port = pointer.Int32Ptr(consts.HealthProbeDefaultRequestPort)
-	}
+	properties.Port = &port.NodePort
 
 	probePort, err := consts.GetHealthProbeConfigOfPortFromK8sSvcAnnotation(serviceManifest.Annotations, port.Port, consts.HealthProbeParamsPort, func(s *string) error {
 		if s == nil {
 			return nil
 		}
+		//not a integer
+		for _, item := range serviceManifest.Spec.Ports {
+			if strings.EqualFold(item.Name, *s) {
+				//found the port
+				return nil
+			}
+		}
 		//nolint:gosec
 		port, err := strconv.Atoi(*s)
 		if err != nil {
-			//not a integer
-			for _, item := range serviceManifest.Spec.Ports {
-				if strings.EqualFold(item.Name, *s) {
-					//found the port
-					return nil
-				}
-			}
 			return fmt.Errorf("port %s not found in service", *s)
 		}
 		if port < 0 || port > 65535 {
 			return fmt.Errorf("port %d is out of range", port)
 		}
-		for _, item := range serviceManifest.Spec.Ports {
-			//nolint:gosec
-			if item.Port == int32(port) {
-				//found the port
-				return nil
-			}
-		}
-		return fmt.Errorf("port %s not found in service", *s)
+		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse annotation %s: %w", consts.BuildHealthProbeAnnotationKeyForPort(port.Port, consts.HealthProbeParamsPort), err)
@@ -135,7 +122,7 @@ func (az *Cloud) buildHealthProbeRulesForPort(serviceManifest *v1.Service, port 
 
 	if probePort != nil {
 		//nolint:gosec
-		port, err := strconv.Atoi(*probePort)
+		port, err := strconv.ParseInt(*probePort, 10, 32)
 		if err != nil {
 			//not a integer
 			for _, item := range serviceManifest.Spec.Ports {
@@ -146,12 +133,19 @@ func (az *Cloud) buildHealthProbeRulesForPort(serviceManifest *v1.Service, port 
 			}
 		} else {
 			// Not need to verify probePort is in correct range again.
+			var found bool
 			for _, item := range serviceManifest.Spec.Ports {
 				//nolint:gosec
 				if item.Port == int32(port) {
 					//found the port
 					properties.Port = pointer.Int32(item.NodePort)
+					found = true
+					break
 				}
+			}
+			if !found {
+				//nolint:gosec
+				properties.Port = pointer.Int32(int32(port))
 			}
 		}
 	}
@@ -173,63 +167,11 @@ func (az *Cloud) buildHealthProbeRulesForPort(serviceManifest *v1.Service, port 
 		}
 		properties.RequestPath = path
 	}
-	// get number of probes
-	var numOfProbeValidator = func(val *int32) error {
-		//minimum number of unhealthy responses is 2. ref: https://docs.microsoft.com/en-us/rest/api/load-balancer/load-balancers/create-or-update#probe
-		const (
-			MinimumNumOfProbe = 2
-		)
-		if *val < MinimumNumOfProbe {
-			return fmt.Errorf("the minimum value of %s is %d", consts.HealthProbeParamsNumOfProbe, MinimumNumOfProbe)
-		}
-		return nil
-	}
-	numberOfProbes, err := consts.GetInt32HealthProbeConfigOfPortFromK8sSvcAnnotation(serviceManifest.Annotations, port.Port, consts.HealthProbeParamsNumOfProbe, numOfProbeValidator)
+
+	properties.IntervalInSeconds, properties.ProbeThreshold, err = az.getHealthProbeConfigProbeIntervalAndNumOfProbe(serviceManifest, port.Port)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse annotation %s: %w", consts.BuildHealthProbeAnnotationKeyForPort(port.Port, consts.HealthProbeParamsNumOfProbe), err)
+		return nil, fmt.Errorf("failed to parse health probe config for port %d: %w", port.Port, err)
 	}
-	if numberOfProbes == nil {
-		if numberOfProbes, err = consts.Getint32ValueFromK8sSvcAnnotation(serviceManifest.Annotations, consts.ServiceAnnotationLoadBalancerHealthProbeNumOfProbe, numOfProbeValidator); err != nil {
-			return nil, fmt.Errorf("failed to parse annotation %s: %w", consts.ServiceAnnotationLoadBalancerHealthProbeNumOfProbe, err)
-		}
-	}
-
-	// if numberOfProbes is not set, set it to default instead ref: https://docs.microsoft.com/en-us/rest/api/load-balancer/load-balancers/create-or-update#probe
-	if numberOfProbes == nil {
-		numberOfProbes = pointer.Int32(consts.HealthProbeDefaultNumOfProbe)
-	}
-
-	// get probe interval in seconds
-	var probeIntervalValidator = func(val *int32) error {
-		//minimum probe interval in seconds is 5. ref: https://docs.microsoft.com/en-us/rest/api/load-balancer/load-balancers/create-or-update#probe
-		const (
-			MinimumProbeIntervalInSecond = 5
-		)
-		if *val < 5 {
-			return fmt.Errorf("the minimum value of %s is %d", consts.HealthProbeParamsProbeInterval, MinimumProbeIntervalInSecond)
-		}
-		return nil
-	}
-	probeInterval, err := consts.GetInt32HealthProbeConfigOfPortFromK8sSvcAnnotation(serviceManifest.Annotations, port.Port, consts.HealthProbeParamsProbeInterval, probeIntervalValidator)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse annotation %s:%w", consts.BuildHealthProbeAnnotationKeyForPort(port.Port, consts.HealthProbeParamsProbeInterval), err)
-	}
-	if probeInterval == nil {
-		if probeInterval, err = consts.Getint32ValueFromK8sSvcAnnotation(serviceManifest.Annotations, consts.ServiceAnnotationLoadBalancerHealthProbeInterval, probeIntervalValidator); err != nil {
-			return nil, fmt.Errorf("failed to parse annotation %s: %w", consts.ServiceAnnotationLoadBalancerHealthProbeInterval, err)
-		}
-	}
-	// if probeInterval is not set, set it to default instead ref: https://docs.microsoft.com/en-us/rest/api/load-balancer/load-balancers/create-or-update#probe
-	if probeInterval == nil {
-		probeInterval = pointer.Int32(consts.HealthProbeDefaultProbeInterval)
-	}
-
-	// total probe should be less than 120 seconds ref: https://docs.microsoft.com/en-us/rest/api/load-balancer/load-balancers/create-or-update#probe
-	if (*probeInterval)*(*numberOfProbes) >= 120 {
-		return nil, fmt.Errorf("total probe should be less than 120, please adjust interval and number of probe accordingly")
-	}
-	properties.IntervalInSeconds = probeInterval
-	properties.ProbeThreshold = numberOfProbes
 	probe := &network.Probe{
 		Name:                  &lbrule,
 		ProbePropertiesFormat: properties,

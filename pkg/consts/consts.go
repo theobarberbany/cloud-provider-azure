@@ -196,8 +196,11 @@ const (
 
 // IP family variables
 const (
-	IPVersionIPv6 bool = true
-	IPVersionIPv4 bool = false
+	IPVersionIPv6            bool   = true
+	IPVersionIPv4            bool   = false
+	IPVersionIPv4String      string = "IPv4"
+	IPVersionIPv6String      string = "IPv6"
+	IPVersionDualStackString string = "DualStack"
 )
 
 // LB variables for dual-stack
@@ -330,6 +333,9 @@ const (
 	// The list is separated by comma. It will be omitted if multi-slb is not used.
 	ServiceAnnotationLoadBalancerConfigurations = "service.beta.kubernetes.io/azure-load-balancer-configurations"
 
+	// ServiceAnnotationDisableTCPReset is the annotation used on the service to disable TCP reset on the load balancer.
+	ServiceAnnotationDisableTCPReset = "service.beta.kubernetes.io/azure-load-balancer-disable-tcp-reset"
+
 	// ServiceTagKey is the service key applied for public IP tags.
 	ServiceTagKey       = "k8s-azure-service"
 	LegacyServiceTagKey = "service"
@@ -427,6 +433,9 @@ const (
 const (
 	RouteNameFmt       = "%s____%s"
 	RouteNameSeparator = "____"
+
+	// DefaultRouteUpdateIntervalInSeconds defines the route reconciling interval.
+	DefaultRouteUpdateIntervalInSeconds = 30
 )
 
 // cloud provider config secret
@@ -461,10 +470,8 @@ const (
 	HealthProbeParamsProtocol HealthProbeParams = "protocol"
 
 	// HealthProbeParamsPort determines the probe port for the health probe params.
-	// It always takes priority over the NodePort of the spec.ports in a Service.
-	// If not set, the kube-proxy health port (10256) will be configured by default.
-	HealthProbeParamsPort         HealthProbeParams = "port"
-	HealthProbeDefaultRequestPort int32             = 10256
+	// It always takes priority over the NodePort of the spec.ports in a Service
+	HealthProbeParamsPort HealthProbeParams = "port"
 
 	// HealthProbeParamsProbeInterval determines the probe interval of the load balancer health probe.
 	// The minimum probe interval is 5 seconds and the default value is 5. The total duration of all intervals cannot exceed 120 seconds.
@@ -480,7 +487,7 @@ const (
 	// This is only useful for the HTTP and HTTPS, and would be ignored when using TCP. If not set,
 	// `/healthz` would be configured by default.
 	HealthProbeParamsRequestPath  HealthProbeParams = "request-path"
-	HealthProbeDefaultRequestPath string            = "/healthz"
+	HealthProbeDefaultRequestPath string            = "/"
 )
 
 type HealthProbeParams string
@@ -533,4 +540,15 @@ const (
 
 const (
 	VMSSTagForBatchOperation = "aks-managed-coordination"
+)
+
+type LoadBalancerBackendPoolUpdateOperation string
+
+const (
+	LoadBalancerBackendPoolUpdateOperationAdd    LoadBalancerBackendPoolUpdateOperation = "add"
+	LoadBalancerBackendPoolUpdateOperationRemove LoadBalancerBackendPoolUpdateOperation = "remove"
+
+	DefaultLoadBalancerBackendPoolUpdateIntervalInSeconds = 30
+
+	ServiceNameLabel = "kubernetes.io/service-name"
 )

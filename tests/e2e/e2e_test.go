@@ -41,6 +41,9 @@ const (
 	defaultReportDir            = "_report/"
 	clusterProvisioningToolKey  = "CLUSTER_PROVISIONING_TOOL"
 	clusterProvisioningToolCAPZ = "capz"
+	testMultiSLB                = "TEST_MULTI_SLB"
+	//nolint:gosec // G101 ignore this!
+	testOOTCredentialProvider = "TEST_ACR_CREDENTIAL_PROVIDER"
 )
 
 func TestAzureTest(t *testing.T) {
@@ -63,14 +66,28 @@ func TestAzureTest(t *testing.T) {
 	suiteConfig, reporterConfig := GinkgoConfiguration()
 	suiteConfig.Timeout = 0
 
-	if strings.EqualFold(os.Getenv(clusterProvisioningToolKey), clusterProvisioningToolCAPZ) {
-		additionalFilter := "!SLBOutbound"
-		if suiteConfig.LabelFilter == "" {
-			suiteConfig.LabelFilter = additionalFilter
-		} else {
-			suiteConfig.LabelFilter = suiteConfig.LabelFilter + " && " + additionalFilter
-		}
+	labelFilters := []string{}
+	if suiteConfig.LabelFilter != "" {
+		labelFilters = append(labelFilters, suiteConfig.LabelFilter)
 	}
+
+	if strings.EqualFold(os.Getenv(clusterProvisioningToolKey), clusterProvisioningToolCAPZ) {
+		labelFilters = append(labelFilters, "!SLBOutbound")
+	}
+
+	var multiSLBFilter string
+	if !strings.EqualFold(os.Getenv(testMultiSLB), utils.TrueValue) {
+		multiSLBFilter = "!Multi-SLB"
+	} else {
+		multiSLBFilter = "!Non-Multi-Slb"
+	}
+	labelFilters = append(labelFilters, multiSLBFilter)
+
+	if !strings.EqualFold(os.Getenv(testOOTCredentialProvider), utils.TrueValue) {
+		labelFilters = append(labelFilters, "!OOT-Credential")
+	}
+
+	suiteConfig.LabelFilter = strings.Join(labelFilters, " && ")
 
 	reporterConfig.Verbose = true
 	reporterConfig.JUnitReport = path.Join(reportDir, fmt.Sprintf("junit_%02d.xml", GinkgoParallelProcess()))
