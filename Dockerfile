@@ -14,7 +14,7 @@
 
 # syntax=docker/dockerfile:1
 
-FROM --platform=linux/amd64 golang:1.20-bullseye@sha256:851af0a8ca4eba552c84db5b2edac7f3be15deb5892217961a1d4b175585a603 AS builder
+FROM --platform=linux/amd64 golang:1.21-bullseye@sha256:436969571fa091f02d34bf2b9bc8850af7de0527e5bc53c39eeda88bc01c38d3 AS builder
 
 ARG ENABLE_GIT_COMMAND=true
 ARG ARCH=amd64
@@ -22,7 +22,7 @@ ARG ARCH=amd64
 WORKDIR /go/src/sigs.k8s.io/cloud-provider-azure
 COPY . .
 
-# Cache the go build into the the Go’s compiler cache folder so we take benefits of compiler caching across docker build calls
+# Cache the go build into the the Go's compiler cache folder so we take benefits of compiler caching across docker build calls
 RUN --mount=type=cache,target=/root/.cache/go-build \
     go build ./cmd/cloud-controller-manager
 

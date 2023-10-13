@@ -1,5 +1,12 @@
 # Release History
 
+## 5.1.0 (2023-07-28)
+### Features Added
+
+- New enum type `FileFormat` with values `FileFormatVHD`, `FileFormatVHDX`
+- New field `FileFormat` in struct `GrantAccessData`
+
+
 ## 5.0.0 (2023-05-26)
 ### Breaking Changes
 

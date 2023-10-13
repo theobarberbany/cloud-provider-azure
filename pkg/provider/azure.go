@@ -46,6 +46,9 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/flowcontrol"
 	cloudprovider "k8s.io/cloud-provider"
+	cloudproviderapi "k8s.io/cloud-provider/api"
+	cloudnodeutil "k8s.io/cloud-provider/node/helpers"
+	nodeutil "k8s.io/component-helpers/node/util"
 	"k8s.io/klog/v2"
 
 	azclients "sigs.k8s.io/cloud-provider-azure/pkg/azureclients"
@@ -77,6 +80,7 @@ import (
 	azcache "sigs.k8s.io/cloud-provider-azure/pkg/cache"
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
 	"sigs.k8s.io/cloud-provider-azure/pkg/retry"
+	"sigs.k8s.io/cloud-provider-azure/pkg/util/taints"
 
 	"sigs.k8s.io/yaml"
 )
@@ -88,6 +92,14 @@ var (
 	defaultDisableOutboundSNAT = false
 	// RouteUpdateWaitingInSeconds is 30 seconds by default.
 	defaultRouteUpdateWaitingInSeconds = 30
+	nodeOutOfServiceTaint              = &v1.Taint{
+		Key:    v1.TaintNodeOutOfService,
+		Effect: v1.TaintEffectNoExecute,
+	}
+	nodeShutdownTaint = &v1.Taint{
+		Key:    cloudproviderapi.TaintNodeShutdown,
+		Effect: v1.TaintEffectNoSchedule,
+	}
 )
 
 // Config holds the configuration parsed from the --cloud-config flag
@@ -259,11 +271,16 @@ type Config struct {
 	// MultipleStandardLoadBalancerConfigurations stores the properties regarding multiple standard load balancers.
 	// It will be ignored if LoadBalancerBackendPoolConfigurationType is nodeIPConfiguration.
 	// If the length is not 0, it is assumed the multiple standard load balancers mode is on. In this case,
-	// there must be one configuration named “<clustername>” or an error will be reported.
+	// there must be one configuration named "<clustername>" or an error will be reported.
 	MultipleStandardLoadBalancerConfigurations []MultipleStandardLoadBalancerConfiguration `json:"multipleStandardLoadBalancerConfigurations,omitempty" yaml:"multipleStandardLoadBalancerConfigurations,omitempty"`
 
 	// DisableAPICallCache disables the cache for Azure API calls. It is for ARG support and not all resources will be disabled.
 	DisableAPICallCache bool `json:"disableAPICallCache,omitempty" yaml:"disableAPICallCache,omitempty"`
+
+	// RouteUpdateIntervalInSeconds is the interval for updating routes. Default is 30 seconds.
+	RouteUpdateIntervalInSeconds int `json:"routeUpdateIntervalInSeconds,omitempty" yaml:"routeUpdateIntervalInSeconds,omitempty"`
+	// LoadBalancerBackendPoolUpdateIntervalInSeconds is the interval for updating load balancer backend pool of local services. Default is 30 seconds.
+	LoadBalancerBackendPoolUpdateIntervalInSeconds int `json:"loadBalancerBackendPoolUpdateIntervalInSeconds,omitempty" yaml:"loadBalancerBackendPoolUpdateIntervalInSeconds,omitempty"`
 }
 
 // MultipleStandardLoadBalancerConfiguration stores the properties regarding multiple standard load balancers.
@@ -272,7 +289,7 @@ type MultipleStandardLoadBalancerConfiguration struct {
 	// created if needed, and the name will be `<name>-internal`. The internal lb
 	// shares the same configurations as the external one. The internal lbs
 	// are not needed to be included in `MultipleStandardLoadBalancerConfigurations`.
-	// There must be a name of “<clustername>” in the load balancer configuration list.
+	// There must be a name of "<clustername>" in the load balancer configuration list.
 	Name string `json:"name" yaml:"name"`
 
 	MultipleStandardLoadBalancerConfigurationSpec
@@ -402,10 +419,11 @@ type Cloud struct {
 	regionZonesMap   map[string][]string
 	refreshZonesLock sync.RWMutex
 
-	KubeClient       clientset.Interface
-	eventBroadcaster record.EventBroadcaster
-	eventRecorder    record.EventRecorder
-	routeUpdater     *delayedRouteUpdater
+	KubeClient         clientset.Interface
+	eventBroadcaster   record.EventBroadcaster
+	eventRecorder      record.EventRecorder
+	routeUpdater       batchProcessor
+	backendPoolUpdater batchProcessor
 
 	vmCache  azcache.Resource
 	lbCache  azcache.Resource
@@ -417,6 +435,8 @@ type Cloud struct {
 	pipCache azcache.Resource
 	// use LB frontEndIpConfiguration ID as the key and search for PLS attached to the frontEnd
 	plsCache azcache.Resource
+	// a timed cache storing storage account properties to avoid querying storage account frequently
+	storageAccountCache azcache.Resource
 
 	// Add service lister to always get latest service
 	serviceLister corelisters.ServiceLister
@@ -430,10 +450,11 @@ type Cloud struct {
 	// runs only once every time the cloud provide restarts.
 	multipleStandardLoadBalancerConfigurationsSynced bool
 	// nodesWithCorrectLoadBalancerByPrimaryVMSet marks nodes that are matched with load balancers by primary vmSet.
-	nodesWithCorrectLoadBalancerByPrimaryVMSet sync.Map
-
+	nodesWithCorrectLoadBalancerByPrimaryVMSet      sync.Map
 	multipleStandardLoadBalancersActiveServicesLock sync.Mutex
 	multipleStandardLoadBalancersActiveNodesLock    sync.Mutex
+	localServiceNameToServiceInfoMap                sync.Map
+	endpointSlicesCache                             sync.Map
 }
 
 // NewCloud returns a Cloud with initialized clients
@@ -609,12 +630,6 @@ func (az *Cloud) InitializeCloudFromConfig(ctx context.Context, config *Config, 
 		}
 	}
 
-	if az.useMultipleStandardLoadBalancers() {
-		if err := az.checkEnableMultipleStandardLoadBalancers(); err != nil {
-			return err
-		}
-	}
-
 	env, err := ratelimitconfig.ParseAzureEnvironment(config.Cloud, config.ResourceManagerEndpoint, config.IdentitySystem)
 	if err != nil {
 		return err
@@ -698,6 +713,12 @@ func (az *Cloud) InitializeCloudFromConfig(ctx context.Context, config *Config, 
 		az.LoadBalancerBackendPool = newBackendPoolTypeNodeIP(az)
 	}
 
+	if az.useMultipleStandardLoadBalancers() {
+		if err := az.checkEnableMultipleStandardLoadBalancers(); err != nil {
+			return err
+		}
+	}
+
 	err = az.initCaches()
 	if err != nil {
 		return err
@@ -710,8 +731,17 @@ func (az *Cloud) InitializeCloudFromConfig(ctx context.Context, config *Config, 
 	// updating routes and syncing zones only in CCM
 	if callFromCCM {
 		// start delayed route updater.
-		az.routeUpdater = newDelayedRouteUpdater(az, routeUpdateInterval)
-		go az.routeUpdater.run()
+		if az.RouteUpdateIntervalInSeconds == 0 {
+			az.RouteUpdateIntervalInSeconds = consts.DefaultRouteUpdateIntervalInSeconds
+		}
+		az.routeUpdater = newDelayedRouteUpdater(az, time.Duration(az.RouteUpdateIntervalInSeconds)*time.Second)
+		go az.routeUpdater.run(ctx)
+
+		// start backend pool updater.
+		if az.useMultipleStandardLoadBalancers() {
+			az.backendPoolUpdater = newLoadBalancerBackendPoolUpdater(az, time.Duration(az.LoadBalancerBackendPoolUpdateIntervalInSeconds)*time.Second)
+			go az.backendPoolUpdater.run(ctx)
+		}
 
 		// Azure Stack does not support zone at the moment
 		// https://docs.microsoft.com/en-us/azure-stack/user/azure-stack-network-differences?view=azs-2102
@@ -723,7 +753,7 @@ func (az *Cloud) InitializeCloudFromConfig(ctx context.Context, config *Config, 
 				return err
 			}
 
-			go az.refreshZones(az.syncRegionZonesMap)
+			go az.refreshZones(ctx, az.syncRegionZonesMap)
 		}
 	}
 
@@ -759,6 +789,10 @@ func (az *Cloud) checkEnableMultipleStandardLoadBalancers() error {
 			return fmt.Errorf("duplicated primary VMSet %s in multiple standard load balancer configurations %s", multiSLBConfig.PrimaryVMSet, multiSLBConfig.Name)
 		}
 		primaryVMSets.Insert(multiSLBConfig.PrimaryVMSet)
+	}
+
+	if az.LoadBalancerBackendPoolUpdateIntervalInSeconds == 0 {
+		az.LoadBalancerBackendPoolUpdateIntervalInSeconds = consts.DefaultLoadBalancerBackendPoolUpdateIntervalInSeconds
 	}
 
 	return nil
@@ -811,6 +845,9 @@ func (az *Cloud) initCaches() (err error) {
 		return err
 	}
 
+	if az.storageAccountCache, err = az.newStorageAccountCache(); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1149,11 +1186,13 @@ func (az *Cloud) SetInformers(informerFactory informers.SharedInformerFactory) {
 		AddFunc: func(obj interface{}) {
 			node := obj.(*v1.Node)
 			az.updateNodeCaches(nil, node)
+			az.updateNodeTaint(node)
 		},
 		UpdateFunc: func(prev, obj interface{}) {
 			prevNode := prev.(*v1.Node)
 			newNode := obj.(*v1.Node)
 			az.updateNodeCaches(prevNode, newNode)
+			az.updateNodeTaint(newNode)
 		},
 		DeleteFunc: func(obj interface{}) {
 			node, isNode := obj.(*v1.Node)
@@ -1180,6 +1219,8 @@ func (az *Cloud) SetInformers(informerFactory informers.SharedInformerFactory) {
 	az.nodeInformerSynced = nodeInformer.HasSynced
 
 	az.serviceLister = informerFactory.Core().V1().Services().Lister()
+
+	az.setUpEndpointSlicesInformer(informerFactory)
 }
 
 // updateNodeCaches updates local cache for node's zones and external resource groups.
@@ -1287,6 +1328,35 @@ func (az *Cloud) updateNodeCaches(prevNode, newNode *v1.Node) {
 			klog.V(6).Infof("adding IP address %s of the node %s", address, newNode.Name)
 			az.nodePrivateIPs[newNode.Name].Insert(address)
 			az.nodePrivateIPToNodeNameMap[address] = newNode.Name
+		}
+	}
+}
+
+// updateNodeTaint updates node out-of-service taint
+func (az *Cloud) updateNodeTaint(node *v1.Node) {
+	if node == nil {
+		klog.Warningf("node is nil, skip updating node out-of-service taint (should not happen)")
+		return
+	}
+	if az.KubeClient == nil {
+		klog.Warningf("az.KubeClient is nil, skip updating node out-of-service taint")
+		return
+	}
+
+	if isNodeReady(node) {
+		if err := cloudnodeutil.RemoveTaintOffNode(az.KubeClient, node.Name, node, nodeOutOfServiceTaint); err != nil {
+			klog.Errorf("failed to remove taint %s from the node %s", v1.TaintNodeOutOfService, node.Name)
+		}
+	} else {
+		// node shutdown taint is added when cloud provider determines instance is shutdown
+		if !taints.TaintExists(node.Spec.Taints, nodeOutOfServiceTaint) &&
+			taints.TaintExists(node.Spec.Taints, nodeShutdownTaint) {
+			klog.V(2).Infof("adding %s taint to node %s", v1.TaintNodeOutOfService, node.Name)
+			if err := cloudnodeutil.AddOrUpdateTaintOnNode(az.KubeClient, node.Name, nodeOutOfServiceTaint); err != nil {
+				klog.Errorf("failed to add taint %s to the node %s", v1.TaintNodeOutOfService, node.Name)
+			}
+		} else {
+			klog.V(2).Infof("node %s is not ready but node shutdown taint is not added, skip adding node out-of-service taint", node.Name)
 		}
 	}
 }
@@ -1424,4 +1494,14 @@ func (az *Cloud) getActiveNodesByLoadBalancerName(lbName string) sets.Set[string
 	}
 
 	return sets.New[string]()
+}
+
+func isNodeReady(node *v1.Node) bool {
+	if node == nil {
+		return false
+	}
+	if _, c := nodeutil.GetNodeCondition(&node.Status, v1.NodeReady); c != nil {
+		return c.Status == v1.ConditionTrue
+	}
+	return false
 }
