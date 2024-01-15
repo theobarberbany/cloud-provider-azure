@@ -190,10 +190,24 @@ func StringInSlice(s string, list []string) bool {
 	return false
 }
 
-func CompareStrings(s0, s1 []string) bool {
-	ss0 := sets.NewString(s0...)
-	ss1 := sets.NewString(s1...)
+func CompareStrings(s0, s1 []*string) bool {
+	ss0 := sets.NewString()
+	for _, s := range s0 {
+		ss0.Insert(*s)
+	}
+	ss1 := sets.NewString()
+	for _, s := range s1 {
+		ss1.Insert(*s)
+	}
 	return ss0.Equal(ss1)
+}
+
+func StrPtrSliceToStrSlice(s []*string) []string {
+	res := []string{}
+	for _, str := range s {
+		res = append(res, *str)
+	}
+	return res
 }
 
 func DeepCopyMap(m map[string]string) map[string]string {

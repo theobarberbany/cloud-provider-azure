@@ -42,8 +42,7 @@ const (
 	clusterProvisioningToolKey  = "CLUSTER_PROVISIONING_TOOL"
 	clusterProvisioningToolCAPZ = "capz"
 	testMultiSLB                = "TEST_MULTI_SLB"
-	//nolint:gosec // G101 ignore this!
-	testOOTCredentialProvider = "TEST_ACR_CREDENTIAL_PROVIDER"
+	healthProbeMode             = "HEALTH_PROBE_MODE"
 )
 
 func TestAzureTest(t *testing.T) {
@@ -83,9 +82,13 @@ func TestAzureTest(t *testing.T) {
 	}
 	labelFilters = append(labelFilters, multiSLBFilter)
 
-	if !strings.EqualFold(os.Getenv(testOOTCredentialProvider), utils.TrueValue) {
-		labelFilters = append(labelFilters, "!OOT-Credential")
+	var sharedProbeFilter string
+	if strings.EqualFold(os.Getenv(healthProbeMode), "shared") {
+		sharedProbeFilter = "Shared-Health-Probe"
+	} else {
+		sharedProbeFilter = "!Shared-Health-Probe"
 	}
+	labelFilters = append(labelFilters, sharedProbeFilter)
 
 	suiteConfig.LabelFilter = strings.Join(labelFilters, " && ")
 

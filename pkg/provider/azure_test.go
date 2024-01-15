@@ -21,7 +21,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -30,8 +29,8 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -44,6 +43,10 @@ import (
 	servicehelpers "k8s.io/cloud-provider/service/helpers"
 	"k8s.io/utils/pointer"
 
+	"sigs.k8s.io/cloud-provider-azure/pkg/azclient"
+	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/mock_azclient"
+
+	"sigs.k8s.io/cloud-provider-azure/pkg/azclient/configloader"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/interfaceclient/mockinterfaceclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/loadbalancerclient/mockloadbalancerclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/privatelinkserviceclient/mockprivatelinkserviceclient"
@@ -60,6 +63,7 @@ import (
 
 const (
 	testClusterName = "testCluster"
+	testLBName      = "testCluster" // FIXME: there are lots of hard-coded lb named testCluster
 )
 
 var (
@@ -123,7 +127,9 @@ func TestAddPort(t *testing.T) {
 	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, false)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
@@ -241,7 +247,7 @@ func setMockPublicIP(az *Cloud, mockPIPsClient *mockpublicipclient.MockInterface
 	ipAddr1 := "1.2.3.4"
 	ipAddra := "1.2.3.5"
 	if isIPv6 {
-		suffix = "-" + v6Suffix
+		suffix = "-" + consts.IPVersionIPv6String
 		ipVer = network.IPv6
 		ipAddr1 = "fd00::eef0"
 		ipAddra = "fd00::eef1"
@@ -514,7 +520,9 @@ func testLoadBalancerServiceDefaultModeSelection(t *testing.T, isInternal bool) 
 	setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, serviceCount)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	mockLBBackendPool.EXPECT().GetBackendPrivateIPs(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
@@ -583,7 +591,9 @@ func testLoadBalancerServiceAutoModeSelection(t *testing.T, isInternal bool) {
 	expectedLBs := make([]network.LoadBalancer, 0)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	mockLBBackendPool.EXPECT().GetBackendPrivateIPs(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
@@ -658,7 +668,9 @@ func testLoadBalancerServicesSpecifiedSelection(t *testing.T, isInternal bool) {
 	expectedLBs := make([]network.LoadBalancer, 0)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	mockLBBackendPool.EXPECT().GetBackendPrivateIPs(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
@@ -717,7 +729,9 @@ func testLoadBalancerMaxRulesServices(t *testing.T, isInternal bool) {
 	expectedLBs := make([]network.LoadBalancer, 0)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	mockLBBackendPool.EXPECT().GetBackendPrivateIPs(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
@@ -802,7 +816,9 @@ func testLoadBalancerServiceAutoModeDeleteSelection(t *testing.T, isInternal boo
 	expectedLBs := make([]network.LoadBalancer, 0)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	mockLBBackendPool.EXPECT().GetBackendPrivateIPs(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
@@ -896,7 +912,9 @@ func TestReconcileLoadBalancerAddServiceOnInternalSubnet(t *testing.T) {
 	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, true)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
@@ -905,44 +923,6 @@ func TestReconcileLoadBalancerAddServiceOnInternalSubnet(t *testing.T) {
 	// ensure we got 2 frontend ip configurations
 	assert.Equal(t, 2, len(*lb.FrontendIPConfigurations))
 	validateLoadBalancer(t, lb, svc)
-}
-
-func TestReconcileSecurityGroupFromAnyDestinationAddressPrefixToLoadBalancerIP(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	az := GetTestCloud(ctrl)
-	svc1 := getTestServiceDualStack("serviceea", v1.ProtocolTCP, nil, 80)
-	setServiceLoadBalancerIP(&svc1, "192.168.0.0")
-	setServiceLoadBalancerIP(&svc1, "fdf8:f535:82e4::53")
-
-	sg := getTestSecurityGroupDualStack(az)
-	setMockSecurityGroup(az, ctrl, sg)
-
-	// Simulate a pre-Kubernetes 1.8 NSG, where we do not specify the destination address prefix
-	_, err := az.reconcileSecurityGroup(testClusterName, &svc1, &[]string{""}, nil, true)
-	assert.Nil(t, err)
-	lbIPs := []string{getServiceLoadBalancerIP(&svc1, false), getServiceLoadBalancerIP(&svc1, true)}
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc1, &lbIPs, nil, true)
-	assert.Nil(t, err)
-	validateSecurityGroupDualStack(t, az, sg, svc1)
-}
-
-func TestReconcileSecurityGroupDynamicLoadBalancerIP(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	az := GetTestCloud(ctrl)
-	svc1 := getTestServiceDualStack("servicea", v1.ProtocolTCP, nil, 80)
-	setServiceLoadBalancerIP(&svc1, "")
-
-	sg := getTestSecurityGroupDualStack(az)
-	setMockSecurityGroup(az, ctrl, sg)
-
-	dynamicallyAssignedIPs := []string{"192.168.0.0", "fdf8:f535:82e4::53"}
-	sg, err := az.reconcileSecurityGroup(testClusterName, &svc1, &dynamicallyAssignedIPs, nil, true)
-	assert.Nil(t, err)
-	validateSecurityGroupDualStack(t, az, sg, svc1)
 }
 
 // Test addition of services on an internal LB using both default and explicit subnets.
@@ -961,7 +941,9 @@ func TestReconcileLoadBalancerAddServicesOnMultipleSubnets(t *testing.T) {
 	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, false)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	// svc1 is using LB without "-internal" suffix
@@ -1009,7 +991,9 @@ func TestReconcileLoadBalancerEditServiceSubnet(t *testing.T) {
 	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, true)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	expectedPLS := make([]network.PrivateLinkService, 0)
@@ -1056,7 +1040,9 @@ func TestReconcileLoadBalancerNodeHealth(t *testing.T) {
 	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, false)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
@@ -1083,7 +1069,9 @@ func TestReconcileLoadBalancerRemoveService(t *testing.T) {
 	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, false)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	_, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
@@ -1121,7 +1109,9 @@ func TestReconcileLoadBalancerRemoveAllPortsRemovesFrontendConfig(t *testing.T) 
 	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, false)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
@@ -1157,7 +1147,9 @@ func TestReconcileLoadBalancerRemovesPort(t *testing.T) {
 	setMockEnvDualStack(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	expectedLBs := make([]network.LoadBalancer, 0)
@@ -1191,7 +1183,9 @@ func TestReconcileLoadBalancerMultipleServices(t *testing.T) {
 	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, false)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	expectedPLS := make([]network.PrivateLinkService, 0)
@@ -1253,7 +1247,9 @@ func TestServiceDefaultsToNoSessionPersistence(t *testing.T) {
 	mockPIPsClient.EXPECT().List(gomock.Any(), az.ResourceGroup).Return([]network.PublicIPAddress{expectedPIP}, nil).AnyTimes()
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
@@ -1312,7 +1308,9 @@ func TestServiceRespectsNoSessionAffinity(t *testing.T) {
 	mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
@@ -1373,7 +1371,9 @@ func TestServiceRespectsClientIPSessionAffinity(t *testing.T) {
 	mockPLSClient.EXPECT().List(gomock.Any(), az.Config.ResourceGroup).Return(expectedPLS, nil).MinTimes(1).MaxTimes(1)
 
 	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
+	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(func(clusterName string, service *v1.Service, lb *network.LoadBalancer) (bool, bool, *network.LoadBalancer, error) {
+		return false, false, lb, nil
+	}).AnyTimes()
 	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	lb, err := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true /* wantLb */)
@@ -1391,212 +1391,6 @@ func TestServiceRespectsClientIPSessionAffinity(t *testing.T) {
 	if lbRule.LoadDistribution != network.LoadDistributionSourceIP {
 		t.Errorf("Expected LB rule to have SourceIP load distribution but was %s", lbRule.LoadDistribution)
 	}
-}
-
-func TestReconcileSecurityGroupNewServiceAddsPort(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	az := GetTestCloud(ctrl)
-	getTestSecurityGroupDualStack(az)
-	svc1 := getTestServiceDualStack("service1", v1.ProtocolTCP, nil, 80)
-	clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 1, 1)
-	setMockEnvDualStack(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
-	expectedLBs := make([]network.LoadBalancer, 0)
-	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, false)
-	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
-	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc1, clusterResources.nodes, true)
-	lbStatus, _, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb)
-
-	assert.Equal(t, 2, len(lbStatus.Ingress))
-	lbIPs := []string{lbStatus.Ingress[0].IP, lbStatus.Ingress[1].IP}
-	sg, err := az.reconcileSecurityGroup(testClusterName, &svc1, &lbIPs, nil, true /* wantLb */)
-	assert.NoError(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, svc1)
-}
-
-func TestReconcileSecurityGroupNewInternalServiceAddsPort(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	az := GetTestCloud(ctrl)
-	getTestSecurityGroup(az)
-	svc1 := getInternalTestService("service1", 80)
-	validateTestSubnet(t, az, &svc1)
-	clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 1, 1)
-	setMockEnv(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
-
-	expectedLBs := make([]network.LoadBalancer, 0)
-	setMockLBs(az, ctrl, &expectedLBs, "service", 1, 1, true)
-
-	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
-	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-
-	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc1, clusterResources.nodes, true)
-	lbStatus, _, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb)
-	sg, err := az.reconcileSecurityGroup(testClusterName, &svc1, &[]string{lbStatus.Ingress[0].IP}, nil, true /* wantLb */)
-	assert.Nil(t, err)
-	validateSecurityGroup(t, az, sg, svc1)
-}
-
-func TestReconcileSecurityGroupRemoveService(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	az := GetTestCloud(ctrl)
-	service1 := getTestServiceDualStack("service1", v1.ProtocolTCP, nil, 81)
-	service2 := getTestServiceDualStack("service2", v1.ProtocolTCP, nil, 82)
-	clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 1, 1)
-	setMockEnvDualStack(az, ctrl, expectedInterfaces, expectedVirtualMachines, 2, service1, service2)
-
-	expectedLBs := make([]network.LoadBalancer, 0)
-	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, true)
-	mockLBClient := az.LoadBalancerClient.(*mockloadbalancerclient.MockInterface)
-	mockLBClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, "testCluster", gomock.Any()).Return(
-		getTestLoadBalancerDualStack(pointer.String(testClusterName),
-			pointer.String(az.ResourceGroup),
-			pointer.String(testClusterName),
-			pointer.String("aservice1"),
-			service1,
-			"Standard"), nil).AnyTimes()
-
-	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
-	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-
-	lb, _ := az.reconcileLoadBalancer(testClusterName, &service1, clusterResources.nodes, true)
-	_, _ = az.reconcileLoadBalancer(testClusterName, &service2, clusterResources.nodes, true)
-
-	lbStatus, _, _, err := az.getServiceLoadBalancerStatus(&service1, lb)
-	assert.NoError(t, err)
-	assert.NotNil(t, lbStatus)
-
-	sg := getTestSecurityGroupDualStack(az, service1, service2)
-	validateSecurityGroupDualStack(t, az, sg, service1, service2)
-
-	assert.Equal(t, 2, len(lbStatus.Ingress))
-	sg, err = az.reconcileSecurityGroup(testClusterName, &service1, &[]string{lbStatus.Ingress[0].IP, lbStatus.Ingress[1].IP}, nil, false /* wantLb */)
-	assert.Nil(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, service2)
-}
-
-func TestReconcileSecurityGroupRemoveServiceRemovesPort(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	az := GetTestCloud(ctrl)
-	svc := getTestServiceDualStack("service1", v1.ProtocolTCP, nil, 80, 443)
-	clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 1, 1)
-	setMockEnvDualStack(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
-
-	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
-	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-
-	getTestSecurityGroupDualStack(az, svc)
-	svcUpdated := getTestServiceDualStack("service1", v1.ProtocolTCP, nil, 80)
-	expectedLBs := make([]network.LoadBalancer, 0)
-	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, true)
-	mockLBClient := az.LoadBalancerClient.(*mockloadbalancerclient.MockInterface)
-	mockLBClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, "testCluster", gomock.Any()).Return(
-		getTestLoadBalancerDualStack(pointer.String(testClusterName),
-			pointer.String(az.ResourceGroup),
-			pointer.String(testClusterName),
-			pointer.String("aservice1"),
-			svc,
-			"Standard"), nil).AnyTimes()
-	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true)
-	lbStatus, _, _, _ := az.getServiceLoadBalancerStatus(&svc, lb)
-
-	assert.Equal(t, 2, len(lbStatus.Ingress))
-	sg, err := az.reconcileSecurityGroup(testClusterName, &svcUpdated, &[]string{lbStatus.Ingress[0].IP, lbStatus.Ingress[1].IP}, nil, true /* wantLb */)
-	assert.Nil(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, svcUpdated)
-}
-
-func TestReconcileSecurityWithSourceRanges(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	az := GetTestCloud(ctrl)
-	svc := getTestServiceDualStack("service1", v1.ProtocolTCP, nil, 80, 443)
-	svc.Spec.LoadBalancerSourceRanges = []string{
-		"192.168.0.0/24",
-		"10.0.0.0/32",
-		"fe00::/64",
-		"ee00::/64",
-	}
-	clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 1, 1)
-	setMockEnvDualStack(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
-
-	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
-	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-
-	getTestSecurityGroupDualStack(az, svc)
-	expectedLBs := make([]network.LoadBalancer, 0)
-	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, false)
-	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc, clusterResources.nodes, true)
-	lbStatus, _, _, _ := az.getServiceLoadBalancerStatus(&svc, lb)
-
-	assert.Equal(t, 2, len(lbStatus.Ingress))
-	sg, err := az.reconcileSecurityGroup(testClusterName, &svc, &[]string{lbStatus.Ingress[0].IP, lbStatus.Ingress[1].IP}, nil, true /* wantLb */)
-	assert.Nil(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, svc)
-}
-
-func TestReconcileSecurityGroupEtagMismatch(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	az := GetTestCloud(ctrl)
-
-	sg := getTestSecurityGroupDualStack(az)
-	cachedSG := *sg
-	cachedSG.Etag = pointer.String("1111111-0000-0000-0000-000000000000")
-	az.nsgCache.Set(pointer.StringDeref(sg.Name, ""), &cachedSG)
-
-	svc1 := getTestServiceDualStack("service1", v1.ProtocolTCP, nil, 80)
-	clusterResources, expectedInterfaces, expectedVirtualMachines := getClusterResources(az, 1, 1)
-	setMockEnvDualStack(az, ctrl, expectedInterfaces, expectedVirtualMachines, 1)
-	mockSGsClient := mocksecuritygroupclient.NewMockInterface(ctrl)
-	az.SecurityGroupsClient = mockSGsClient
-	mockSGsClient.EXPECT().Get(gomock.Any(), az.SecurityGroupResourceGroup, az.SecurityGroupName, gomock.Any()).Return(cachedSG, nil).AnyTimes()
-	expectedError := &retry.Error{
-		HTTPStatusCode: http.StatusPreconditionFailed,
-		RawError:       errPreconditionFailedEtagMismatch,
-	}
-	mockSGsClient.EXPECT().CreateOrUpdate(gomock.Any(), az.SecurityGroupResourceGroup, az.SecurityGroupName, gomock.Any(), gomock.Any()).Return(expectedError).AnyTimes()
-
-	expectedLBs := make([]network.LoadBalancer, 0)
-	setMockLBsDualStack(az, ctrl, &expectedLBs, "service", 1, 1, true)
-	mockLBClient := az.LoadBalancerClient.(*mockloadbalancerclient.MockInterface)
-	mockLBClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, "testCluster", gomock.Any()).Return(
-		getTestLoadBalancer(pointer.String(testClusterName),
-			pointer.String(az.ResourceGroup),
-			pointer.String(testClusterName),
-			pointer.String("aservice1"),
-			svc1,
-			"Standard"), nil).AnyTimes()
-
-	mockLBBackendPool := az.LoadBalancerBackendPool.(*MockBackendPool)
-	mockLBBackendPool.EXPECT().ReconcileBackendPools(gomock.Any(), gomock.Any(), gomock.Any()).Return(false, false, false, nil).AnyTimes()
-	mockLBBackendPool.EXPECT().EnsureHostsInPool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
-
-	lb, _ := az.reconcileLoadBalancer(testClusterName, &svc1, clusterResources.nodes, true)
-	lbStatus, _, _, _ := az.getServiceLoadBalancerStatus(&svc1, lb)
-
-	newSG, err := az.reconcileSecurityGroup(testClusterName, &svc1, &[]string{lbStatus.Ingress[0].IP}, nil, true /* wantLb */)
-	assert.Nil(t, newSG)
-	assert.Error(t, err)
-
-	assert.Equal(t, expectedError.Error(), err)
 }
 
 func TestReconcilePublicIPsWithNewService(t *testing.T) {
@@ -1994,7 +1788,7 @@ func validateLoadBalancer(t *testing.T, loadBalancer *network.LoadBalancer, serv
 			expectedFrontendIPs = append(expectedFrontendIPs, expectedFrontendIP)
 			if svcIPFamilyCount == 2 {
 				expectedFrontendIP := ExpectedFrontendIPInfo{
-					Name:   az.getDefaultFrontendIPConfigName(&services[i]) + "-" + v6Suffix,
+					Name:   az.getDefaultFrontendIPConfigName(&services[i]) + "-" + consts.IPVersionIPv6String,
 					Subnet: pointer.String(expectedSubnetName),
 				}
 				expectedFrontendIPs = append(expectedFrontendIPs, expectedFrontendIP)
@@ -2052,7 +1846,7 @@ func validateLoadBalancer(t *testing.T, loadBalancer *network.LoadBalancer, serv
 				} else {
 					for _, actualProbe := range *loadBalancer.Probes {
 						if strings.EqualFold(*actualProbe.Name, wantedRuleNameMap[isIPv6]) &&
-							*actualProbe.Port == consts.HealthProbeDefaultRequestPort {
+							*actualProbe.Port == wantedRule.NodePort {
 							foundProbe = true
 							break
 						}
@@ -2165,116 +1959,6 @@ func validatePublicIP(t *testing.T, publicIP *network.PublicIPAddress, service *
 	// Because service properties are updated outside of cloudprovider code
 }
 
-func contains(ruleValues []string, targetValue string) bool {
-	for _, ruleValue := range ruleValues {
-		if strings.EqualFold(ruleValue, targetValue) {
-			return true
-		}
-	}
-	return false
-}
-
-func securityRuleMatches(serviceSourceRange string, servicePort v1.ServicePort, serviceIP string, securityRule network.SecurityRule) error {
-	ruleSource := securityRule.SourceAddressPrefixes
-	if ruleSource == nil || len(*ruleSource) == 0 {
-		if securityRule.SourceAddressPrefix == nil {
-			ruleSource = &[]string{}
-		} else {
-			ruleSource = &[]string{*securityRule.SourceAddressPrefix}
-		}
-	}
-
-	rulePorts := securityRule.DestinationPortRanges
-	if rulePorts == nil || len(*rulePorts) == 0 {
-		if securityRule.DestinationPortRange == nil {
-			rulePorts = &[]string{}
-		} else {
-			rulePorts = &[]string{*securityRule.DestinationPortRange}
-		}
-	}
-
-	ruleDestination := securityRule.DestinationAddressPrefixes
-	if ruleDestination == nil || len(*ruleDestination) == 0 {
-		if securityRule.DestinationAddressPrefix == nil {
-			ruleDestination = &[]string{}
-		} else {
-			ruleDestination = &[]string{*securityRule.DestinationAddressPrefix}
-		}
-	}
-
-	if !contains(*ruleSource, serviceSourceRange) {
-		return fmt.Errorf("Rule does not contain source %s", serviceSourceRange)
-	}
-
-	if !contains(*rulePorts, fmt.Sprintf("%d", servicePort.Port)) {
-		return fmt.Errorf("Rule does not contain port %d", servicePort.Port)
-	}
-
-	if serviceIP != "" && !contains(*ruleDestination, serviceIP) {
-		return fmt.Errorf("Rule does not contain destination %s", serviceIP)
-	}
-
-	return nil
-}
-
-func validateSecurityGroupCommon(t *testing.T, az *Cloud, securityGroup *network.SecurityGroup, v4Enabled, v6Enabled bool, services ...v1.Service) {
-	expectedRules := make(map[string]bool)
-	for _, svc := range services {
-		svc := svc
-		for _, wantedRule := range svc.Spec.Ports {
-			sources := getServiceSourceRanges(&svc)
-			for _, source := range sources {
-				checkRule := func(svc *v1.Service, wantedRule v1.ServicePort, source string, isIPv6 bool) {
-					sourceIP, _, err := net.ParseCIDR(source)
-					// err == nil means source is a valid CIDR.
-					if err == nil && sourceIP.To4() == nil != isIPv6 {
-						return
-					}
-					wantedRuleName := az.getSecurityRuleName(svc, wantedRule, source, isIPv6)
-					expectedRules[wantedRuleName] = true
-
-					foundRule := false
-					for _, actualRule := range *securityGroup.SecurityRules {
-						if strings.EqualFold(*actualRule.Name, wantedRuleName) {
-							if err := securityRuleMatches(source, wantedRule, getServiceLoadBalancerIP(svc, isIPv6), actualRule); err != nil {
-								t.Errorf("Found matching security rule %q but properties were incorrect: %v", wantedRuleName, err)
-							}
-							foundRule = true
-							break
-						}
-					}
-					if !foundRule {
-						t.Errorf("Expected security group rule but didn't find it: %q", wantedRuleName)
-					}
-				}
-
-				if v4Enabled {
-					checkRule(&svc, wantedRule, source, false)
-				}
-				if v6Enabled {
-					checkRule(&svc, wantedRule, source, true)
-				}
-			}
-		}
-	}
-
-	actualRules := []string{}
-	for _, rule := range *securityGroup.SecurityRules {
-		actualRules = append(actualRules, *rule.Name)
-	}
-	lenRules := len(*securityGroup.SecurityRules)
-	expectedRuleCount := len(expectedRules)
-	assert.Equalf(t, expectedRuleCount, lenRules, "Expected rules: %v, actual ones: %v", expectedRules, actualRules)
-}
-
-func validateSecurityGroupDualStack(t *testing.T, az *Cloud, securityGroup *network.SecurityGroup, services ...v1.Service) {
-	validateSecurityGroupCommon(t, az, securityGroup, true, true, services...)
-}
-
-func validateSecurityGroup(t *testing.T, az *Cloud, securityGroup *network.SecurityGroup, services ...v1.Service) {
-	validateSecurityGroupCommon(t, az, securityGroup, true, false, services...)
-}
-
 func TestGetNextAvailablePriority(t *testing.T) {
 	rules50, rulesTooMany := []network.SecurityRule{}, []network.SecurityRule{}
 	for i := int32(consts.LoadBalancerMinimumPriority); i < consts.LoadBalancerMinimumPriority+50; i++ {
@@ -2382,7 +2066,7 @@ func TestNewCloudFromJSON(t *testing.T) {
 		"cloudProviderRatelimit": true,
 		"cloudProviderRateLimitQPS": 0.5,
 		"cloudProviderRateLimitBucket": 5,
-		"availabilitySetNodesCacheTTLInSeconds": 100,
+		"availabilitySetsCacheTTLInSeconds": 100,
 		"nonVmssUniformNodesCacheTTLInSeconds": 100,
 		"vmssCacheTTLInSeconds": 100,
 		"vmssVirtualMachinesCacheTTLInSeconds": 100,
@@ -2449,7 +2133,7 @@ cloudProviderBackoffJitter: 1.0
 cloudProviderRatelimit: true
 cloudProviderRateLimitQPS: 0.5
 cloudProviderRateLimitBucket: 5
-availabilitySetNodesCacheTTLInSeconds: 100
+availabilitySetsCacheTTLInSeconds: 100
 nonVmssUniformNodesCacheTTLInSeconds: 100
 vmssCacheTTLInSeconds: 100
 vmssVirtualMachinesCacheTTLInSeconds: 100
@@ -2544,8 +2228,8 @@ func validateConfig(t *testing.T, config string) { //nolint
 	if azureCloud.CloudProviderRateLimitBucket != 5 {
 		t.Errorf("got incorrect value for CloudProviderRateLimitBucket")
 	}
-	if azureCloud.AvailabilitySetNodesCacheTTLInSeconds != 100 {
-		t.Errorf("got incorrect value for availabilitySetNodesCacheTTLInSeconds")
+	if azureCloud.AvailabilitySetsCacheTTLInSeconds != 100 {
+		t.Errorf("got incorrect value for AvailabilitySetsCacheTTLInSeconds")
 	}
 	if azureCloud.NonVmssUniformNodesCacheTTLInSeconds != 100 {
 		t.Errorf("got incorrect value for nonVmssUniformNodesCacheTTLInSeconds")
@@ -2604,6 +2288,8 @@ func getCloudFromConfig(t *testing.T, config string) *Cloud {
 		excludeLoadBalancerNodes: sets.New[string](),
 		routeCIDRs:               map[string]string{},
 		ZoneClient:               mockzoneclient.NewMockInterface(ctrl),
+		ComputeClientFactory:     mock_azclient.NewMockClientFactory(ctrl),
+		NetworkClientFactory:     mock_azclient.NewMockClientFactory(ctrl),
 	}
 	mockZoneClient := az.ZoneClient.(*mockzoneclient.MockInterface)
 	mockZoneClient.EXPECT().GetZones(gomock.Any(), gomock.Any()).Return(map[string][]string{"eastus": {"1", "2", "3"}}, nil)
@@ -2708,678 +2394,6 @@ func validateTestSubnet(t *testing.T, az *Cloud, svc *v1.Service) {
 			ID:   &subnetID,
 			Name: &subName,
 		}, nil).AnyTimes()
-}
-
-func TestIfServiceSpecifiesSharedRuleAndRuleDoesNotExistItIsCreated(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	az := GetTestCloud(ctrl)
-	svc := getTestServiceDualStack("servicea", v1.ProtocolTCP, nil, 80)
-	setServiceLoadBalancerIP(&svc, testIPs[0][false])
-	setServiceLoadBalancerIP(&svc, testIPs[0][true])
-	svc.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	sg := getTestSecurityGroupDualStack(az)
-	setMockSecurityGroup(az, ctrl, sg)
-
-	sg, err := az.reconcileSecurityGroup(testClusterName, &svc, &[]string{getServiceLoadBalancerIP(&svc, false), getServiceLoadBalancerIP(&svc, true)}, nil, true)
-	assert.Nil(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, svc)
-
-	for isIPv6, expectedRuleName := range testRuleNames[0] {
-		t.Run(fmt.Sprintf("expectedRuleName=%s isIPv6=%t", expectedRuleName, isIPv6), func(t *testing.T) {
-			_, securityRule, ruleFound := findSecurityRuleByName(*sg.SecurityRules, expectedRuleName)
-			assert.True(t, ruleFound)
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 80}, testIPs[0][isIPv6], securityRule))
-			assert.NotNil(t, securityRule.Priority)
-			assert.Equal(t, network.SecurityRuleAccessAllow, securityRule.Access)
-			assert.Equal(t, network.SecurityRuleDirectionInbound, securityRule.Direction)
-		})
-	}
-}
-
-func TestIfServiceSpecifiesSharedRuleAndRuleExistsThenTheServicesPortAndAddressAreAdded(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	az := GetTestCloud(ctrl)
-	svc := getTestServiceDualStack("servicesr", v1.ProtocolTCP, nil, 80)
-	setServiceLoadBalancerIP(&svc, testIPs[0][false])
-	setServiceLoadBalancerIP(&svc, testIPs[0][true])
-	svc.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	sg := getTestSecurityGroupDualStack(az)
-	rules := []network.SecurityRule{}
-	for _, isIPv6 := range []bool{false, true} {
-		ruleName := testRuleNames[0][isIPv6]
-		rule := network.SecurityRule{
-			Name: &ruleName,
-			SecurityRulePropertiesFormat: &network.SecurityRulePropertiesFormat{
-				Protocol:                 network.SecurityRuleProtocolTCP,
-				SourcePortRange:          pointer.String("*"),
-				SourceAddressPrefix:      pointer.String("Internet"),
-				DestinationPortRange:     pointer.String("80"),
-				DestinationAddressPrefix: pointer.String(testIPs[1][isIPv6]),
-				Access:                   network.SecurityRuleAccessAllow,
-				Direction:                network.SecurityRuleDirectionInbound,
-			},
-		}
-		rules = append(rules, rule)
-	}
-	sg.SecurityRules = &rules
-	setMockSecurityGroup(az, ctrl, sg)
-
-	sg, err := az.reconcileSecurityGroup(testClusterName, &svc, &[]string{getServiceLoadBalancerIP(&svc, false), getServiceLoadBalancerIP(&svc, true)}, nil, true)
-	assert.Nil(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, svc)
-
-	for isIPv6, expectedRuleName := range testRuleNames[0] {
-		t.Run(fmt.Sprintf("expectedRuleName=%s isIPv6=%t", expectedRuleName, isIPv6), func(t *testing.T) {
-			_, securityRule, ruleFound := findSecurityRuleByName(*sg.SecurityRules, expectedRuleName)
-			assert.True(t, ruleFound)
-			assert.Equal(t, 2, len(*securityRule.DestinationAddressPrefixes))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 80}, testIPs[1][isIPv6], securityRule))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 80}, testIPs[0][isIPv6], securityRule))
-		})
-	}
-}
-
-func TestIfServicesSpecifySharedRuleButDifferentPortsThenSeparateRulesAreCreated(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	az := GetTestCloud(ctrl)
-
-	svc1 := getTestServiceDualStack("servicesr1", v1.ProtocolTCP, nil, 4444)
-	setServiceLoadBalancerIP(&svc1, testIPs[0][false])
-	setServiceLoadBalancerIP(&svc1, testIPs[0][true])
-	svc1.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	svc2 := getTestServiceDualStack("servicesr2", v1.ProtocolTCP, nil, 8888)
-	setServiceLoadBalancerIP(&svc2, testIPs[1][false])
-	setServiceLoadBalancerIP(&svc2, testIPs[1][true])
-	svc2.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	sg := getTestSecurityGroupDualStack(az)
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err := az.reconcileSecurityGroup(testClusterName, &svc1, &[]string{getServiceLoadBalancerIP(&svc1, false), getServiceLoadBalancerIP(&svc1, true)}, nil, true)
-	assert.Nil(t, err)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc2, &[]string{getServiceLoadBalancerIP(&svc2, false), getServiceLoadBalancerIP(&svc2, true)}, nil, true)
-	assert.Nil(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, svc1, svc2)
-
-	for isIPv6, ruleName := range testRuleNames[1] {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, securityRule, ruleFound := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, ruleFound)
-			assert.Equal(t, 1, len(*securityRule.DestinationAddressPrefixes))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[0][isIPv6], securityRule))
-			assert.NotNil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 8888}, testIPs[1][isIPv6], securityRule))
-		})
-	}
-
-	for isIPv6, ruleName := range testRuleNames[2] {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, securityRule, ruleFound := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, ruleFound)
-			assert.Equal(t, 1, len(*securityRule.DestinationAddressPrefixes))
-			assert.NotNil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[0][isIPv6], securityRule))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 8888}, testIPs[1][isIPv6], securityRule))
-		})
-	}
-}
-
-func TestIfServicesSpecifySharedRuleButDifferentProtocolsThenSeparateRulesAreCreated(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	az := GetTestCloud(ctrl)
-
-	svc1 := getTestServiceDualStack("servicesr1", v1.ProtocolTCP, nil, 4444)
-	setServiceLoadBalancerIP(&svc1, testIPs[0][false])
-	setServiceLoadBalancerIP(&svc1, testIPs[0][true])
-	svc1.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	svc2 := getTestServiceDualStack("servicesr2", v1.ProtocolUDP, nil, 4444)
-	setServiceLoadBalancerIP(&svc2, testIPs[0][false])
-	setServiceLoadBalancerIP(&svc2, testIPs[0][true])
-	svc2.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	ruleName2 := map[bool]string{
-		false: "shared-UDP-4444-Internet",
-		true:  "shared-UDP-4444-Internet-IPv6",
-	}
-
-	sg := getTestSecurityGroupDualStack(az)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err := az.reconcileSecurityGroup(testClusterName, &svc1, &[]string{getServiceLoadBalancerIP(&svc1, false), getServiceLoadBalancerIP(&svc1, true)}, nil, true)
-	if err != nil {
-		t.Errorf("Unexpected error adding svc1: %q", err)
-	}
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc2, &[]string{getServiceLoadBalancerIP(&svc2, false), getServiceLoadBalancerIP(&svc2, true)}, nil, true)
-	if err != nil {
-		t.Errorf("Unexpected error adding svc2: %q", err)
-	}
-
-	validateSecurityGroupDualStack(t, az, sg, svc1, svc2)
-
-	for isIPv6, ruleName := range testRuleNames[1] {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, securityRule1, rule1Found := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, rule1Found)
-			assert.Equal(t, 1, len(*securityRule1.DestinationAddressPrefixes))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[0][isIPv6], securityRule1))
-			assert.Equal(t, network.SecurityRuleProtocolTCP, securityRule1.Protocol)
-		})
-	}
-
-	for isIPv6, ruleName := range ruleName2 {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, securityRule2, rule2Found := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, rule2Found)
-			assert.Equal(t, 1, len(*securityRule2.DestinationAddressPrefixes))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[0][isIPv6], securityRule2))
-			assert.Equal(t, network.SecurityRuleProtocolUDP, securityRule2.Protocol)
-		})
-	}
-}
-
-func TestIfServicesSpecifySharedRuleButDifferentSourceAddressesThenSeparateRulesAreCreated(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	az := GetTestCloud(ctrl)
-
-	svc1 := getTestServiceDualStack("servicesr1", v1.ProtocolTCP, nil, 80)
-	setServiceLoadBalancerIP(&svc1, testIPs[0][false])
-	setServiceLoadBalancerIP(&svc1, testIPs[0][true])
-	svc1.Spec.LoadBalancerSourceRanges = []string{"192.168.12.0/24", "fd::1:0/112"}
-	svc1.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	svc2 := getTestServiceDualStack("servicesr2", v1.ProtocolTCP, nil, 80)
-	setServiceLoadBalancerIP(&svc2, testIPs[1][false])
-	setServiceLoadBalancerIP(&svc2, testIPs[1][true])
-	svc2.Spec.LoadBalancerSourceRanges = []string{"192.168.34.0/24", "fd::2:0/112"}
-	svc2.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	ruleName1 := map[bool]string{
-		false: "shared-TCP-80-192.168.12.0_24",
-		true:  "shared-TCP-80-fd..1.0_112-IPv6",
-	}
-	ruleName2 := map[bool]string{
-		false: "shared-TCP-80-192.168.34.0_24",
-		true:  "shared-TCP-80-fd..2.0_112-IPv6",
-	}
-
-	sg := getTestSecurityGroupDualStack(az)
-	var err error
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc1, &[]string{getServiceLoadBalancerIP(&svc1, false), getServiceLoadBalancerIP(&svc1, true)}, nil, true)
-	assert.Nil(t, err)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc2, &[]string{getServiceLoadBalancerIP(&svc2, false), getServiceLoadBalancerIP(&svc2, true)}, nil, true)
-	assert.Nil(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, svc1, svc2)
-
-	for isIPv6, ruleName := range ruleName1 {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			loadBalancerSourceRange := svc1.Spec.LoadBalancerSourceRanges[0]
-			if isIPv6 {
-				loadBalancerSourceRange = svc1.Spec.LoadBalancerSourceRanges[1]
-			}
-			_, securityRule1, rule1Found := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, rule1Found)
-			assert.Equal(t, 1, len(*securityRule1.DestinationAddressPrefixes))
-			assert.Nil(t, securityRuleMatches(loadBalancerSourceRange, v1.ServicePort{Port: 80}, testIPs[0][isIPv6], securityRule1))
-			assert.NotNil(t, securityRuleMatches(loadBalancerSourceRange, v1.ServicePort{Port: 80}, testIPs[1][isIPv6], securityRule1))
-		})
-	}
-
-	for isIPv6, ruleName := range ruleName2 {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			loadBalancerSourceRange := svc2.Spec.LoadBalancerSourceRanges[0]
-			if isIPv6 {
-				loadBalancerSourceRange = svc2.Spec.LoadBalancerSourceRanges[1]
-			}
-			_, securityRule2, rule2Found := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, rule2Found)
-			assert.Equal(t, 1, len(*securityRule2.DestinationAddressPrefixes))
-			assert.Nil(t, securityRuleMatches(loadBalancerSourceRange, v1.ServicePort{Port: 80}, testIPs[1][isIPv6], securityRule2))
-			assert.NotNil(t, securityRuleMatches(loadBalancerSourceRange, v1.ServicePort{Port: 80}, testIPs[0][isIPv6], securityRule2))
-		})
-	}
-}
-
-func TestIfServicesSpecifySharedRuleButSomeAreOnDifferentPortsThenRulesAreSeparatedOrConsoliatedByPort(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	az := GetTestCloud(ctrl)
-
-	svc1 := getTestServiceDualStack("servicesr1", v1.ProtocolTCP, nil, 4444)
-	setServiceLoadBalancerIP(&svc1, testIPs[0][false])
-	setServiceLoadBalancerIP(&svc1, testIPs[0][true])
-	svc1.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	svc2 := getTestServiceDualStack("servicesr2", v1.ProtocolTCP, nil, 8888)
-	setServiceLoadBalancerIP(&svc2, testIPs[1][false])
-	setServiceLoadBalancerIP(&svc2, testIPs[1][true])
-	svc2.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	svc3 := getTestServiceDualStack("servicesr3", v1.ProtocolTCP, nil, 4444)
-	setServiceLoadBalancerIP(&svc3, testIPs[2][false])
-	setServiceLoadBalancerIP(&svc3, testIPs[2][true])
-	svc3.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	testRuleName23 := testRuleNames[1]
-	sg := getTestSecurityGroupDualStack(az)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err := az.reconcileSecurityGroup(testClusterName, &svc1, &[]string{getServiceLoadBalancerIP(&svc1, false), getServiceLoadBalancerIP(&svc1, true)}, nil, true)
-	assert.Nil(t, err)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc2, &[]string{getServiceLoadBalancerIP(&svc2, false), getServiceLoadBalancerIP(&svc2, true)}, nil, true)
-	assert.Nil(t, err)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc3, &[]string{getServiceLoadBalancerIP(&svc3, false), getServiceLoadBalancerIP(&svc3, true)}, nil, true)
-	assert.Nil(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, svc1, svc2, svc3)
-
-	for isIPv6, ruleName := range testRuleName23 {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, rule, ruleFound := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, ruleFound)
-			assert.Equal(t, 2, len(*rule.DestinationAddressPrefixes))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[0][isIPv6], rule))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[2][isIPv6], rule))
-			assert.NotNil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 8888}, testIPs[1][isIPv6], rule))
-			assert.NotNil(t, rule.Priority)
-			assert.Equal(t, network.SecurityRuleAccessAllow, rule.Access)
-			assert.Equal(t, network.SecurityRuleDirectionInbound, rule.Direction)
-		})
-	}
-
-	for isIPv6, ruleName := range testRuleNames[2] {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, rule, ruleFound := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, ruleFound)
-			assert.Equal(t, 1, len(*rule.DestinationAddressPrefixes))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 8888}, testIPs[1][isIPv6], rule))
-			assert.NotNil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[0][isIPv6], rule))
-			assert.NotNil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[2][isIPv6], rule))
-		})
-	}
-}
-
-func TestIfServiceSpecifiesSharedRuleAndServiceIsDeletedThenTheServicesPortAndAddressAreRemoved(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	az := GetTestCloud(ctrl)
-
-	svc1 := getTestServiceDualStack("servicesr1", v1.ProtocolTCP, nil, 80)
-	setServiceLoadBalancerIP(&svc1, testIPs[0][false])
-	setServiceLoadBalancerIP(&svc1, testIPs[0][true])
-	svc1.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	svc2 := getTestServiceDualStack("servicesr2", v1.ProtocolTCP, nil, 80)
-	setServiceLoadBalancerIP(&svc2, testIPs[1][false])
-	setServiceLoadBalancerIP(&svc2, testIPs[1][true])
-	svc2.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	sg := getTestSecurityGroupDualStack(az)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err := az.reconcileSecurityGroup(testClusterName, &svc1, &[]string{getServiceLoadBalancerIP(&svc1, false), getServiceLoadBalancerIP(&svc1, true)}, nil, true)
-	assert.Nil(t, err)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc2, &[]string{getServiceLoadBalancerIP(&svc2, false), getServiceLoadBalancerIP(&svc2, true)}, nil, true)
-	assert.Nil(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, svc1, svc2)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc1, &[]string{getServiceLoadBalancerIP(&svc1, false), getServiceLoadBalancerIP(&svc1, true)}, nil, false)
-	assert.Nil(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, svc2)
-
-	for isIPv6, ruleName := range testRuleNames[0] {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, securityRule, ruleFound := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, ruleFound)
-			assert.Equal(t, 1, len(*securityRule.DestinationAddressPrefixes))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 80}, testIPs[1][isIPv6], securityRule))
-			assert.NotNil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 80}, testIPs[0][isIPv6], securityRule))
-		})
-	}
-}
-
-func TestIfSomeServicesShareARuleAndOneIsDeletedItIsRemovedFromTheRightRule(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	az := GetTestCloud(ctrl)
-
-	svc1 := getTestServiceDualStack("servicesr1", v1.ProtocolTCP, nil, 4444)
-	setServiceLoadBalancerIP(&svc1, testIPs[0][false])
-	setServiceLoadBalancerIP(&svc1, testIPs[0][true])
-	svc1.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	svc2 := getTestServiceDualStack("servicesr2", v1.ProtocolTCP, nil, 8888)
-	setServiceLoadBalancerIP(&svc2, testIPs[1][false])
-	setServiceLoadBalancerIP(&svc2, testIPs[1][true])
-	svc2.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	svc3 := getTestServiceDualStack("servicesr3", v1.ProtocolTCP, nil, 4444)
-	setServiceLoadBalancerIP(&svc3, testIPs[2][false])
-	setServiceLoadBalancerIP(&svc3, testIPs[2][true])
-	svc3.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	sg := getTestSecurityGroupDualStack(az)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err := az.reconcileSecurityGroup(testClusterName, &svc1, &[]string{getServiceLoadBalancerIP(&svc1, false), getServiceLoadBalancerIP(&svc1, true)}, nil, true)
-	assert.Nil(t, err)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc2, &[]string{getServiceLoadBalancerIP(&svc2, false), getServiceLoadBalancerIP(&svc2, true)}, nil, true)
-	assert.Nil(t, err)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc3, &[]string{getServiceLoadBalancerIP(&svc3, false), getServiceLoadBalancerIP(&svc3, true)}, nil, true)
-	assert.Nil(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, svc1, svc2, svc3)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc1, &[]string{getServiceLoadBalancerIP(&svc1, false), getServiceLoadBalancerIP(&svc1, true)}, nil, false)
-	assert.Nil(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, svc2, svc3)
-
-	for isIPv6, ruleName := range testRuleNames[1] {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, rule, ruleFound := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, ruleFound)
-			assert.Equal(t, 1, len(*rule.DestinationAddressPrefixes))
-			assert.NotNil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[0][isIPv6], rule))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[2][isIPv6], rule))
-			assert.NotNil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 8888}, testIPs[1][isIPv6], rule))
-			assert.NotNil(t, rule.Priority)
-			assert.Equal(t, network.SecurityRuleAccessAllow, rule.Access)
-			assert.Equal(t, network.SecurityRuleDirectionInbound, rule.Direction)
-		})
-	}
-
-	for isIPv6, ruleName := range testRuleNames[2] {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, rule, ruleFound := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, ruleFound)
-			assert.Equal(t, 1, len(*rule.DestinationAddressPrefixes))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 8888}, testIPs[1][isIPv6], rule))
-
-			assert.NotNil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[0][isIPv6], rule))
-			assert.NotNil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[2][isIPv6], rule))
-		})
-	}
-}
-
-func TestIfServiceSpecifiesSharedRuleAndLastServiceIsDeletedThenRuleIsDeleted(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	az := GetTestCloud(ctrl)
-
-	svc1 := getTestServiceDualStack("servicesr1", v1.ProtocolTCP, nil, 4444)
-	setServiceLoadBalancerIP(&svc1, testIPs[0][false])
-	setServiceLoadBalancerIP(&svc1, testIPs[0][true])
-	svc1.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	svc2 := getTestServiceDualStack("servicesr2", v1.ProtocolTCP, nil, 8888)
-	setServiceLoadBalancerIP(&svc2, testIPs[1][false])
-	setServiceLoadBalancerIP(&svc2, testIPs[1][true])
-	svc2.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	svc3 := getTestServiceDualStack("servicesr3", v1.ProtocolTCP, nil, 4444)
-	setServiceLoadBalancerIP(&svc3, testIPs[2][false])
-	setServiceLoadBalancerIP(&svc3, testIPs[2][true])
-	svc3.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	sg := getTestSecurityGroupDualStack(az)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err := az.reconcileSecurityGroup(testClusterName, &svc1, &[]string{getServiceLoadBalancerIP(&svc1, false), getServiceLoadBalancerIP(&svc1, true)}, nil, true)
-	assert.Nil(t, err)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc2, &[]string{getServiceLoadBalancerIP(&svc2, false), getServiceLoadBalancerIP(&svc2, true)}, nil, true)
-	assert.Nil(t, err)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc3, &[]string{getServiceLoadBalancerIP(&svc3, false), getServiceLoadBalancerIP(&svc3, true)}, nil, true)
-	assert.Nil(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, svc1, svc2, svc3)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc1, &[]string{getServiceLoadBalancerIP(&svc1, false), getServiceLoadBalancerIP(&svc1, true)}, nil, false)
-	assert.Nil(t, err)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc3, &[]string{getServiceLoadBalancerIP(&svc3, false), getServiceLoadBalancerIP(&svc3, true)}, nil, false)
-	assert.Nil(t, err)
-
-	validateSecurityGroupDualStack(t, az, sg, svc2)
-
-	for isIPv6, ruleName := range testRuleNames[1] {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, _, ruleFound := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.False(t, ruleFound)
-		})
-	}
-
-	for isIPv6, ruleName := range testRuleNames[2] {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, rule, ruleFound := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, ruleFound)
-			assert.Equal(t, 1, len(*rule.DestinationAddressPrefixes))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 8888}, testIPs[1][isIPv6], rule))
-			assert.NotNil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[0][isIPv6], rule))
-			assert.NotNil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[2][isIPv6], rule))
-		})
-	}
-}
-
-func TestCanCombineSharedAndPrivateRulesInSameGroup(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-	az := GetTestCloud(ctrl)
-	var err error
-
-	svc1 := getTestServiceDualStack("servicesr1", v1.ProtocolTCP, nil, 4444)
-	setServiceLoadBalancerIP(&svc1, testIPs[0][false])
-	setServiceLoadBalancerIP(&svc1, testIPs[0][true])
-	svc1.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	svc2 := getTestServiceDualStack("servicesr2", v1.ProtocolTCP, nil, 8888)
-	setServiceLoadBalancerIP(&svc2, testIPs[1][false])
-	setServiceLoadBalancerIP(&svc2, testIPs[1][true])
-	svc2.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	svc3 := getTestServiceDualStack("servicesr3", v1.ProtocolTCP, nil, 4444)
-	setServiceLoadBalancerIP(&svc3, testIPs[2][false])
-	setServiceLoadBalancerIP(&svc3, testIPs[2][true])
-	svc3.Annotations[consts.ServiceAnnotationSharedSecurityRule] = consts.TrueAnnotationValue
-
-	svc4 := getTestServiceDualStack("servicesr4", v1.ProtocolTCP, nil, 4444)
-	setServiceLoadBalancerIP(&svc4, testIPs[3][false])
-	setServiceLoadBalancerIP(&svc4, testIPs[3][true])
-	svc4.Annotations[consts.ServiceAnnotationSharedSecurityRule] = "false"
-
-	svc5 := getTestServiceDualStack("servicesr5", v1.ProtocolTCP, nil, 8888)
-	setServiceLoadBalancerIP(&svc5, testIPs[3][false])
-	setServiceLoadBalancerIP(&svc5, testIPs[3][true])
-	svc5.Annotations[consts.ServiceAnnotationSharedSecurityRule] = "false"
-
-	testServices := []v1.Service{svc1, svc2, svc3, svc4, svc5}
-
-	testRuleName23 := testRuleNames[1]
-	expectedRuleName4 := map[bool]string{
-		false: az.getSecurityRuleName(&svc4, v1.ServicePort{Port: 4444, Protocol: v1.ProtocolTCP}, "Internet", false),
-		true:  az.getSecurityRuleName(&svc4, v1.ServicePort{Port: 4444, Protocol: v1.ProtocolTCP}, "Internet", true),
-	}
-	expectedRuleName5 := map[bool]string{
-		false: az.getSecurityRuleName(&svc5, v1.ServicePort{Port: 8888, Protocol: v1.ProtocolTCP}, "Internet", false),
-		true:  az.getSecurityRuleName(&svc5, v1.ServicePort{Port: 8888, Protocol: v1.ProtocolTCP}, "Internet", true),
-	}
-
-	sg := getTestSecurityGroupDualStack(az)
-
-	for i, svc := range testServices {
-		svc := svc
-		setMockSecurityGroup(az, ctrl, sg)
-		sg, err = az.reconcileSecurityGroup(testClusterName, &testServices[i], &[]string{getServiceLoadBalancerIP(&svc, false), getServiceLoadBalancerIP(&svc, true)}, nil, true)
-		assert.Nil(t, err)
-	}
-
-	validateSecurityGroupDualStack(t, az, sg, svc1, svc2, svc3, svc4, svc5)
-
-	assert.Equal(t, 8, len(*sg.SecurityRules))
-
-	for isIPv6, ruleName := range testRuleName23 {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, securityRule13, rule13Found := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, rule13Found)
-			assert.Equal(t, 2, len(*securityRule13.DestinationAddressPrefixes))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[0][isIPv6], securityRule13))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[2][isIPv6], securityRule13))
-			assert.NotNil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 4444}, testIPs[3][isIPv6], securityRule13))
-		})
-	}
-
-	for isIPv6, ruleName := range testRuleNames[2] {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, securityRule2, rule2Found := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, rule2Found)
-			assert.Equal(t, 1, len(*securityRule2.DestinationAddressPrefixes))
-			assert.Nil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 8888}, testIPs[1][isIPv6], securityRule2))
-			assert.NotNil(t, securityRuleMatches("Internet", v1.ServicePort{Port: 8888}, testIPs[3][isIPv6], securityRule2))
-		})
-	}
-
-	for isIPv6, ruleName := range expectedRuleName4 {
-		t.Run(fmt.Sprintf("expectedRuleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, securityRule4, rule4Found := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, rule4Found)
-			assert.Nil(t, securityRule4.DestinationAddressPrefixes)
-			assert.NotNil(t, securityRule4.DestinationAddressPrefix)
-			assert.Equal(t, getServiceLoadBalancerIP(&svc4, isIPv6), *securityRule4.DestinationAddressPrefix)
-		})
-	}
-
-	for isIPv6, ruleName := range expectedRuleName5 {
-		t.Run(fmt.Sprintf("expectedRuleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, securityRule5, rule5Found := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, rule5Found)
-			assert.Nil(t, securityRule5.DestinationAddressPrefixes)
-			assert.NotNil(t, securityRule5.DestinationAddressPrefix)
-			assert.Equal(t, getServiceLoadBalancerIP(&svc5, isIPv6), *securityRule5.DestinationAddressPrefix)
-		})
-	}
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc1, &[]string{getServiceLoadBalancerIP(&svc1, false), getServiceLoadBalancerIP(&svc1, true)}, nil, false)
-	assert.Nil(t, err)
-
-	setMockSecurityGroup(az, ctrl, sg)
-	sg, err = az.reconcileSecurityGroup(testClusterName, &svc5, &[]string{getServiceLoadBalancerIP(&svc5, false), getServiceLoadBalancerIP(&svc5, true)}, nil, false)
-	assert.Nil(t, err)
-
-	for isIPv6, ruleName := range testRuleName23 {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, securityRule13, rule13Found := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, rule13Found)
-			assert.Equal(t, 1, len(*securityRule13.DestinationAddressPrefixes))
-		})
-	}
-
-	for isIPv6, ruleName := range testRuleNames[2] {
-		t.Run(fmt.Sprintf("ruleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, _, rule2Found := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, rule2Found)
-		})
-	}
-
-	for isIPv6, ruleName := range expectedRuleName4 {
-		t.Run(fmt.Sprintf("expectedRuleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, _, rule4Found := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.True(t, rule4Found)
-		})
-	}
-
-	for isIPv6, ruleName := range expectedRuleName5 {
-		t.Run(fmt.Sprintf("expectedRuleName=%s isIPv6=%t", ruleName, isIPv6), func(t *testing.T) {
-			_, _, rule5Found := findSecurityRuleByName(*sg.SecurityRules, ruleName)
-			assert.False(t, rule5Found)
-		})
-	}
-}
-
-func TestGetInfoFromDiskURI(t *testing.T) {
-	tests := []struct {
-		diskURL        string
-		expectedRG     string
-		expectedSubsID string
-		expectError    bool
-	}{
-		{
-			diskURL:        "/subscriptions/4be8920b-2978-43d7-axyz-04d8549c1d05/resourceGroups/azure-k8s1102/providers/Microsoft.Compute/disks/andy-mghyb1102-dynamic-pvc-f7f014c9-49f4-11e8-ab5c-000d3af7b38e",
-			expectedRG:     "azure-k8s1102",
-			expectedSubsID: "4be8920b-2978-43d7-axyz-04d8549c1d05",
-			expectError:    false,
-		},
-		{
-			// case insensitive check
-			diskURL:        "/subscriptions/4be8920b-2978-43d7-axyz-04d8549c1d05/resourcegroups/azure-k8s1102/providers/Microsoft.Compute/disks/andy-mghyb1102-dynamic-pvc-f7f014c9-49f4-11e8-ab5c-000d3af7b38e",
-			expectedRG:     "azure-k8s1102",
-			expectedSubsID: "4be8920b-2978-43d7-axyz-04d8549c1d05",
-			expectError:    false,
-		},
-		{
-			diskURL:     "/4be8920b-2978-43d7-axyz-04d8549c1d05/resourceGroups/azure-k8s1102/providers/Microsoft.Compute/disks/andy-mghyb1102-dynamic-pvc-f7f014c9-49f4-11e8-ab5c-000d3af7b38e",
-			expectedRG:  "",
-			expectError: true,
-		},
-		{
-			diskURL:     "",
-			expectedRG:  "",
-			expectError: true,
-		},
-	}
-
-	for _, test := range tests {
-		rg, subsID, err := getInfoFromDiskURI(test.diskURL)
-		assert.Equal(t, rg, test.expectedRG, "Expect result not equal with getInfoFromDiskURI(%s) return: %q, expected: %q",
-			test.diskURL, rg, test.expectedRG)
-		assert.Equal(t, subsID, test.expectedSubsID, "Expect result not equal with getInfoFromDiskURI(%s) return: %q, expected: %q",
-			test.diskURL, subsID, test.expectedSubsID)
-
-		if test.expectError {
-			assert.NotNil(t, err, "Expect error during getInfoFromDiskURI(%s)", test.diskURL)
-		} else {
-			assert.Nil(t, err, "Expect error is nil during getInfoFromDiskURI(%s)", test.diskURL)
-		}
-	}
 }
 
 func TestGetResourceGroups(t *testing.T) {
@@ -3795,9 +2809,11 @@ func TestInitializeCloudFromConfig(t *testing.T) {
 
 	config = Config{
 		AzureAuthConfig: providerconfig.AzureAuthConfig{
-			Cloud: "AZUREPUBLICCLOUD",
+			ARMClientConfig: azclient.ARMClientConfig{
+				Cloud: "AZUREPUBLICCLOUD",
+			},
 		},
-		CloudConfigType: cloudConfigTypeFile,
+		CloudConfigType: configloader.CloudConfigTypeFile,
 	}
 	err = az.InitializeCloudFromConfig(context.Background(), &config, false, true)
 	expectedErr = fmt.Errorf("useInstanceMetadata must be enabled without Azure credentials")

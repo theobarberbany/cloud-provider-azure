@@ -47,7 +47,7 @@ interactions:
                 - "0"
         status: 200 OK
         code: 200
-        duration: 678.830804ms
+        duration: 827.56526ms
     - id: 1
       request:
         proto: HTTP/1.1
@@ -94,7 +94,7 @@ interactions:
                 - "0"
         status: 200 OK
         code: 200
-        duration: 362.302803ms
+        duration: 236.939232ms
     - id: 2
       request:
         proto: HTTP/1.1
@@ -109,7 +109,7 @@ interactions:
         body: client_id=clientid&client_secret=clientsecret&grant_type=client_credentials&scope=https%3A%2F%2Fmanagement.azure.com%2F.default+openid+offline_access+profile
         form:
             client_id:
-                - 2cb66ba2-e03b-4c9b-99ce-3a22b7bdf8e6
+                - clientid
             client_secret:
                 - clientsecret
             grant_type:
@@ -129,14 +129,14 @@ interactions:
         proto_minor: 1
         transfer_encoding: []
         trailer: {}
-        content_length: 1402
+        content_length: 1421
         uncompressed: false
         body: '{"token_type":"Bearer","expires_in":86399,"ext_expires_in":86399,"access_token":"faketoken"}'
         headers:
             Cache-Control:
                 - no-store, no-cache
             Content-Length:
-                - "1402"
+                - "1421"
             Content-Type:
                 - application/json; charset=utf-8
             Expires:
@@ -153,4 +153,4 @@ interactions:
                 - "0"
         status: 200 OK
         code: 200
-        duration: 264.480502ms
+        duration: 328.289105ms

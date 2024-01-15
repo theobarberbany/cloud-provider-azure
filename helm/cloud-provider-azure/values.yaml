@@ -50,6 +50,7 @@ cloudControllerManager:
     effect: NoExecute
   nodeSelector:
     node-role.kubernetes.io/control-plane: ""
+  federatedTokenPath: "/var/run/secrets/azure/tokens"
 cloudNodeManager:
   enabled: true
   imageRepository: "mcr.microsoft.com/oss/kubernetes"
@@ -76,3 +77,8 @@ cloudNodeManager:
     requestsMemWin: "50Mi"
     limitsCPUWin: "2"
     limitsMemWin: "512Mi"
+  enableHealthProbeProxy: false
+  healthCheckPort: 10356
+  targetPort: 10256
+  healthProbeProxyImage: "ss104301/health-probe-proxy:latest"
+  healthProbeProxyImageWindows: "ss104301/health-probe-proxy-windows:latest"

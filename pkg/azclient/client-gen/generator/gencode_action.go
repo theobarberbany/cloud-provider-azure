@@ -29,13 +29,9 @@ import (
 // generateClient writes out the build tag, package declaration, and imports
 func generateClient(ctx *genall.GenerationContext, root *loader.Package, _ string, markerConf ClientGenConfig, headerText string) error {
 	var importList = make(map[string]map[string]struct{})
-
-	aliasMap, ok := importList[markerConf.PackageName]
-	if !ok {
-		aliasMap = make(map[string]struct{})
-		importList[markerConf.PackageName] = aliasMap
-	}
+	aliasMap := make(map[string]struct{})
 	aliasMap[markerConf.PackageAlias] = struct{}{}
+	importList[markerConf.PackageName] = aliasMap
 
 	var outContent bytes.Buffer
 	if err := ClientTemplate.Execute(&outContent, markerConf); err != nil {
@@ -46,7 +42,10 @@ func generateClient(ctx *genall.GenerationContext, root *loader.Package, _ strin
 		root.AddError(err)
 		return err
 	}
-
+	if len(markerConf.Verbs) > 0 {
+		importList["github.com/Azure/azure-sdk-for-go/sdk/azcore/runtime"] = make(map[string]struct{})
+		importList["context"] = make(map[string]struct{})
+	}
 	// define structs
 	for _, verb := range markerConf.Verbs {
 		switch true {
@@ -81,10 +80,10 @@ func generateClient(ctx *genall.GenerationContext, root *loader.Package, _ strin
 	if outContent.Len() <= 0 {
 		return nil
 	}
-	importList["context"] = make(map[string]struct{})
 	importList["sigs.k8s.io/cloud-provider-azure/pkg/azclient/utils"] = make(map[string]struct{})
 	importList["github.com/Azure/azure-sdk-for-go/sdk/azcore"] = make(map[string]struct{})
 	importList["github.com/Azure/azure-sdk-for-go/sdk/azcore/arm"] = make(map[string]struct{})
+	importList["github.com/Azure/azure-sdk-for-go/sdk/azcore/tracing"] = make(map[string]struct{})
 	if err := WriteToFile(ctx, root, "zz_generated_client.go", headerText, importList, &outContent); err != nil {
 		return err
 	}

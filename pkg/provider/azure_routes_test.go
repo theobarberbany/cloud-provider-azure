@@ -25,8 +25,8 @@ import (
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -810,4 +810,27 @@ func TestCleanupOutdatedRoutes(t *testing.T) {
 			assert.Equal(t, testCase.expectedRoutes, routes)
 		})
 	}
+}
+
+func TestEnsureRouteTableTagged(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	cloud := GetTestCloud(ctrl)
+	cloud.Tags = "a=b,c=d"
+
+	expectedTags := map[string]*string{
+		"a": pointer.String("b"),
+		"c": pointer.String("d"),
+	}
+	rt := &network.RouteTable{}
+	tags, changed := cloud.ensureRouteTableTagged(rt)
+	assert.Equal(t, expectedTags, tags)
+	assert.True(t, changed)
+
+	cloud.RouteTableResourceGroup = "rg1"
+	rt = &network.RouteTable{}
+	tags, changed = cloud.ensureRouteTableTagged(rt)
+	assert.Nil(t, tags)
+	assert.False(t, changed)
 }

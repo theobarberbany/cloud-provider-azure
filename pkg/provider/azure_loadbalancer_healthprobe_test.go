@@ -21,8 +21,14 @@ import (
 	"strings"
 	"testing"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
+
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/utils/pointer"
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
@@ -39,7 +45,7 @@ func getTestProbes(protocol, path string, interval, servicePort, probePort, numO
 func getTestProbe(protocol, path string, interval, servicePort, probePort, numOfProbe *int32, isIPv6 bool) network.Probe {
 	suffix := ""
 	if isIPv6 {
-		suffix = "-" + v6Suffix
+		suffix = "-" + consts.IPVersionIPv6String
 	}
 	expectedProbes := network.Probe{
 		Name: pointer.String(fmt.Sprintf("atest1-TCP-%d", *servicePort) + suffix),
@@ -57,8 +63,8 @@ func getTestProbe(protocol, path string, interval, servicePort, probePort, numOf
 }
 
 // getDefaultTestProbes returns dualStack probes.
-func getDefaultTestProbes(protocol, path string, port int32) map[bool][]network.Probe {
-	return getTestProbes(protocol, path, pointer.Int32(5), pointer.Int32(80), pointer.Int32(port), pointer.Int32(2))
+func getDefaultTestProbes(protocol, path string) map[bool][]network.Probe {
+	return getTestProbes(protocol, path, pointer.Int32(5), pointer.Int32(80), pointer.Int32(10080), pointer.Int32(2))
 }
 
 func TestFindProbe(t *testing.T) {
@@ -194,6 +200,180 @@ func TestFindProbe(t *testing.T) {
 		t.Run(test.msg, func(t *testing.T) {
 			findResult := findProbe(test.existingProbe, test.curProbe)
 			assert.Equal(t, test.expected, findResult)
+		})
+	}
+}
+
+func TestShouldKeepSharedProbe(t *testing.T) {
+	testCases := []struct {
+		desc        string
+		service     *v1.Service
+		lb          network.LoadBalancer
+		wantLB      bool
+		expected    bool
+		expectedErr error
+	}{
+		{
+			desc:     "When the lb.Probes is nil",
+			service:  &v1.Service{},
+			lb:       network.LoadBalancer{},
+			expected: false,
+		},
+		{
+			desc:    "When the lb.Probes is not nil but does not contain a probe with the name consts.SharedProbeName",
+			service: &v1.Service{},
+			lb: network.LoadBalancer{
+				LoadBalancerPropertiesFormat: &network.LoadBalancerPropertiesFormat{
+					Probes: &[]network.Probe{
+						{
+							Name: pointer.String("notSharedProbe"),
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			desc:    "When the lb.Probes contains a probe with the name consts.SharedProbeName, but none of the LoadBalancingRules in the probe matches the service",
+			service: &v1.Service{},
+			lb: network.LoadBalancer{
+				LoadBalancerPropertiesFormat: &network.LoadBalancerPropertiesFormat{
+					Probes: &[]network.Probe{
+						{
+							Name: pointer.String(consts.SharedProbeName),
+							ProbePropertiesFormat: &network.ProbePropertiesFormat{
+								LoadBalancingRules: &[]network.SubResource{},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			desc: "When the lb.Probes contains a probe with the name consts.SharedProbeName, and at least one of the LoadBalancingRules in the probe does not match the service",
+			service: &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					UID: types.UID("uid"),
+				},
+			},
+			lb: network.LoadBalancer{
+				LoadBalancerPropertiesFormat: &network.LoadBalancerPropertiesFormat{
+					Probes: &[]network.Probe{
+						{
+							Name: pointer.String(consts.SharedProbeName),
+							ID:   pointer.String("id"),
+							ProbePropertiesFormat: &network.ProbePropertiesFormat{
+								LoadBalancingRules: &[]network.SubResource{
+									{
+										ID: pointer.String("other"),
+									},
+									{
+										ID: pointer.String("auid"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: true,
+		},
+		{
+			desc: "When wantLB is true and the shared probe mode is not turned on",
+			service: &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					UID: types.UID("uid"),
+				},
+			},
+			lb: network.LoadBalancer{
+				LoadBalancerPropertiesFormat: &network.LoadBalancerPropertiesFormat{
+					Probes: &[]network.Probe{
+						{
+							Name: pointer.String(consts.SharedProbeName),
+							ID:   pointer.String("id"),
+							ProbePropertiesFormat: &network.ProbePropertiesFormat{
+								LoadBalancingRules: &[]network.SubResource{
+									{
+										ID: pointer.String("other"),
+									},
+									{
+										ID: pointer.String("auid"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantLB: true,
+		},
+		{
+			desc: "When the lb.Probes contains a probe with the name consts.SharedProbeName, and all of the LoadBalancingRules in the probe match the service",
+			service: &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					UID: types.UID("uid"),
+				},
+			},
+			lb: network.LoadBalancer{
+				LoadBalancerPropertiesFormat: &network.LoadBalancerPropertiesFormat{
+					Probes: &[]network.Probe{
+						{
+							Name: pointer.String(consts.SharedProbeName),
+							ID:   pointer.String("id"),
+							ProbePropertiesFormat: &network.ProbePropertiesFormat{
+								LoadBalancingRules: &[]network.SubResource{
+									{
+										ID: pointer.String("auid"),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected: false,
+		},
+		{
+			desc:     "Edge cases such as when the service or LoadBalancer is nil",
+			service:  nil,
+			lb:       network.LoadBalancer{},
+			expected: false,
+		},
+		{
+			desc:    "Case: Invalid LoadBalancingRule ID format causing getLastSegment to return an error",
+			service: &v1.Service{},
+			lb: network.LoadBalancer{
+				LoadBalancerPropertiesFormat: &network.LoadBalancerPropertiesFormat{
+					Probes: &[]network.Probe{
+						{
+							Name: pointer.String(consts.SharedProbeName),
+							ID:   pointer.String("id"),
+							ProbePropertiesFormat: &network.ProbePropertiesFormat{
+								LoadBalancingRules: &[]network.SubResource{
+									{
+										ID: pointer.String(""),
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			expected:    false,
+			expectedErr: fmt.Errorf("resource name was missing from identifier"),
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.desc, func(t *testing.T) {
+			az := GetTestCloud(gomock.NewController(t))
+			var expectedProbes []network.Probe
+			result, err := az.keepSharedProbe(tc.service, tc.lb, expectedProbes, tc.wantLB)
+			assert.Equal(t, tc.expectedErr, err)
+			if tc.expected {
+				assert.Equal(t, 1, len(result))
+			}
 		})
 	}
 }
