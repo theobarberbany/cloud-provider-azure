@@ -588,8 +588,10 @@ func (az *Cloud) InitializeCloudFromConfig(ctx context.Context, config *Config, 
 		}
 	}
 
+	// This carried change should be dropped when OCPBUGS-24486 is merged into the CCM to set the shared mode.
+	// Changing it here to ensure there's no gap in functionality that breaks paylod.
 	if config.ClusterServiceLoadBalancerHealthProbeMode == "" {
-		config.ClusterServiceLoadBalancerHealthProbeMode = consts.ClusterServiceLoadBalancerHealthProbeModeServiceNodePort
+		config.ClusterServiceLoadBalancerHealthProbeMode = consts.ClusterServiceLoadBalancerHealthProbeModeShared
 	} else {
 		supportedClusterServiceLoadBalancerHealthProbeModes := sets.New(
 			strings.ToLower(consts.ClusterServiceLoadBalancerHealthProbeModeServiceNodePort),
