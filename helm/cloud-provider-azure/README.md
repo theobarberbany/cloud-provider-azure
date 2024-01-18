@@ -59,25 +59,26 @@ Below is the complete set of configuration that you may include when invoking `h
 
 ## cloud-controller-manager configuration
 
-| configuration value                                              | default value                        | description                                                                                                                                                                      |
-|------------------------------------------------------------------|--------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `infra.clusterName`                                              | `"kubernetes"`                       | Set the cluster name appropriate for your infra provider (e.g., capz, AKS).                                                                                                      |
-| `cloudControllerManager.enabled`                                 | `true`                               | Enable or disable the azure-cloud-controller-manager deployment.                                                                                                                 |
-| `cloudControllerManager.caCertDir`                               | `"/etc/ssl"`                         | Specify the CA cert directory to mount on the azure-cloud-controller-manager pod.                                                                                                |
-| `cloudControllerManager.cloudConfig`                             | `"/etc/kubernetes/azure.json"`       | The path to the cloud provider configuration file. Empty string for no configuration file.                                                                                       |
-| `cloudControllerManager.clusterCIDR`                             | `"10.244.0.0/16"`                    | set to the network CIDR for pod IP addresses                                                                                                                                     |
-| `cloudControllerManager.configureCloudRoutes`                    | `"true"`                             | if you're using Azure CNI set to `"false"`                                                                                                                                       |
-| `cloudControllerManager.imageRepository`                         | `"mcr.microsoft.com/oss/kubernetes"` | container image repository (including any image project directories) location where the Azure `cloud-controller-manager` container image is hosted                               |
-| `cloudControllerManager.imageName`                               | `"azure-cloud-controller-manager"`   | container image name for the Azure `cloud-controller-manager` runtime                                                                                                            |
-| `cloudControllerManager.imagePullPolicy`                         | `"IfNotPresent"`                     | you may change to`"Always"` or `"Never"` if appropriate for your environment, see [here](https://kubernetes.io/docs/concepts/containers/images/#image-pull-policy) for more info |
-| `cloudControllerManager.logVerbosity`                            | `"2"`                                | set to a higher number when debugging the azure-cloud-controller-manager runtime                                                                                                 |
-| `cloudControllerManager.securePort`                              | `"10268"`                            | The port on which to serve HTTPS with authentication and authorization.                                                                                                          |
-| `cloudControllerManager.replicas`                                | `"1"`                                | Number of replicas for the azure-cloud-controller-manager deployment. It should be no more than the number of control plane Nodes                                                |
-| `cloudControllerManager.routeReconciliationPeriod`               | `"10s"`                              | how often to reconcile node routes                                                                                                                                               |
-| `cloudControllerManager.containerResourceManagement.requestsCPU` | `"100m"`                             | CPU requests configuration for the azure-cloud-controller-manager pod                                                                                                            |
-| `cloudControllerManager.containerResourceManagement.requestsMem` | `"128Mi"`                            | Memory requests configuration for the azure-cloud-controller-manager pod                                                                                                         |
-| `cloudControllerManager.containerResourceManagement.limitsCPU`   | `"4"`                                | CPU limits configuration for the azure-cloud-controller-manager pod                                                                                                              |
-| `cloudControllerManager.containerResourceManagement.limitsMem`   | `"2Gi"`                              | Memory limits configuration for the azure-cloud-controller-manager pod                                                                                                           |
+| configuration value                                               | default value                        | description                                                                                                                                                                      |
+|-------------------------------------------------------------------|--------------------------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `infra.clusterName`                                               | `"kubernetes"`                       | Set the cluster name appropriate for your infra provider (e.g., capz, AKS).                                                                                                      |
+| `cloudControllerManager.enabled`                                  | `true`                               | Enable or disable the azure-cloud-controller-manager deployment.                                                                                                                 |
+| `cloudControllerManager.caCertDir`                                | `"/etc/ssl"`                         | Specify the CA cert directory to mount on the azure-cloud-controller-manager pod.                                                                                                |
+| `cloudControllerManager.cloudConfig`                              | `"/etc/kubernetes/azure.json"`       | The path to the cloud provider configuration file. Empty string for no configuration file.                                                                                       |
+| `cloudControllerManager.clusterCIDR`                              | `"10.244.0.0/16"`                    | set to the network CIDR for pod IP addresses                                                                                                                                     |
+| `cloudControllerManager.configureCloudRoutes`                     | `"true"`                             | if you're using Azure CNI set to `"false"`                                                                                                                                       |
+| `cloudControllerManager.imageRepository`                          | `"mcr.microsoft.com/oss/kubernetes"` | container image repository (including any image project directories) location where the Azure `cloud-controller-manager` container image is hosted                               |
+| `cloudControllerManager.imageName`                                | `"azure-cloud-controller-manager"`   | container image name for the Azure `cloud-controller-manager` runtime                                                                                                            |
+| `cloudControllerManager.imagePullPolicy`                          | `"IfNotPresent"`                     | you may change to`"Always"` or `"Never"` if appropriate for your environment, see [here](https://kubernetes.io/docs/concepts/containers/images/#image-pull-policy) for more info |
+| `cloudControllerManager.logVerbosity`                             | `"2"`                                | set to a higher number when debugging the azure-cloud-controller-manager runtime                                                                                                 |
+| `cloudControllerManager.securePort`                               | `"10268"`                            | The port on which to serve HTTPS with authentication and authorization.                                                                                                          |
+| `cloudControllerManager.replicas`                                 | `"1"`                                | Number of replicas for the azure-cloud-controller-manager deployment. It should be no more than the number of control plane Nodes                                                |
+| `cloudControllerManager.routeReconciliationPeriod`                | `"10s"`                              | how often to reconcile node routes                                                                                                                                               |
+| `cloudControllerManager.containerResourceManagement.requestsCPU`  | `"100m"`                             | CPU requests configuration for the azure-cloud-controller-manager pod                                                                                                            |
+| `cloudControllerManager.containerResourceManagement.requestsMem`  | `"128Mi"`                            | Memory requests configuration for the azure-cloud-controller-manager pod                                                                                                         |
+| `cloudControllerManager.containerResourceManagement.limitsCPU`    | `"4"`                                | CPU limits configuration for the azure-cloud-controller-manager pod                                                                                                              |
+| `cloudControllerManager.containerResourceManagement.limitsMem`    | `"2Gi"`                              | Memory limits configuration for the azure-cloud-controller-manager pod                                                                                                           |
+| `cloudControllerManager.federatedTokenPath`                       | `"/var/run/secrets/azure/tokens"`    | Directory path where service account token will be projected. This is used in workload identity                                                                                  |
 
 ## cloud-node-manager configuration
 
@@ -128,19 +129,24 @@ The following configuration is made available for advanced users. There are no d
 
 ## optional cloud-node-manager configuration
 
-| configuration value | description |
-| --- | --- |
-| `cloudNodeManager.imageTag` | `"v1.23.11"` | container image tag for the Azure `cloud-node-manager` runtime |
-| `cloudNodeManager.cloudConfig` | The path to the cloud config file to be used when using ARM (i.e., when `cloudNodeManager.useInstanceMetadata=false`) to fetch node information. |
-| `cloudNodeManager.kubeAPIBurst` | Burst to use while talking with kubernetes apiserver. |
-| `cloudNodeManager.kubeAPIContentType` | Content type of requests sent to apiserver. |
-| `cloudNodeManager.kubeAPIQPS` | QPS to use while talking with kubernetes apiserver. |
-| `cloudNodeManager.kubeconfig` | Path to kubeconfig file with authorization and master location information. |
-| `cloudNodeManager.master` | The address of the Kubernetes API server (overrides any value in kubeconfig). |
-| `cloudNodeManager.minResyncPeriod` | The resync period in reflectors will be random between MinResyncPeriod and 2*MinResyncPeriod. |
-| `cloudNodeManager.nodeStatusUpdateFrequency` | Specifies how often the controller updates nodes' status. |
-| `cloudNodeManager.waitRoutes` | Whether the nodes should wait for routes created on Azure route table. It should be set to true when using kubenet plugin. |
-| `cloudNodeManager.useInstanceMetadata` | Should use Instance Metadata Service for fetching node information; if false will use ARM instead. |
+| configuration value                             | description                                                                                                                                      |
+|-------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------|
+| `cloudNodeManager.imageTag`                     | `"v1.23.11"`                                                                                                                                     | container image tag for the Azure `cloud-node-manager` runtime |
+| `cloudNodeManager.cloudConfig`                  | The path to the cloud config file to be used when using ARM (i.e., when `cloudNodeManager.useInstanceMetadata=false`) to fetch node information. |
+| `cloudNodeManager.kubeAPIBurst`                 | Burst to use while talking with kubernetes apiserver.                                                                                            |
+| `cloudNodeManager.kubeAPIContentType`           | Content type of requests sent to apiserver.                                                                                                      |
+| `cloudNodeManager.kubeAPIQPS`                   | QPS to use while talking with kubernetes apiserver.                                                                                              |
+| `cloudNodeManager.kubeconfig`                   | Path to kubeconfig file with authorization and master location information.                                                                      |
+| `cloudNodeManager.master`                       | The address of the Kubernetes API server (overrides any value in kubeconfig).                                                                    |
+| `cloudNodeManager.minResyncPeriod`              | The resync period in reflectors will be random between MinResyncPeriod and 2*MinResyncPeriod.                                                    |
+| `cloudNodeManager.nodeStatusUpdateFrequency`    | Specifies how often the controller updates nodes' status.                                                                                        |
+| `cloudNodeManager.waitRoutes`                   | Whether the nodes should wait for routes created on Azure route table. It should be set to true when using kubenet plugin.                       |
+| `cloudNodeManager.useInstanceMetadata`          | Should use Instance Metadata Service for fetching node information; if false will use ARM instead.                                               |
+| `cloudNodeManager.enableHealthProbeProxy`       | Enable health probe proxy sidecar. [Documentation](../health-probe-proxy/README.md)                                                              |
+| `cloudNodeManager.healthProbePort`              | Port for health probe proxy sidecar. [Documentation](../health-probe-proxy/README.md)                                                            |
+| `cloudNodeManager.targetPort`                   | Target port for health probe proxy sidecar. [Documentation](../health-probe-proxy/README.md)                                                     |
+| `cloudNodeManager.healthProbeProxyImage`        | Container image name for the health probe proxy sidecar. [Documentation](../health-probe-proxy/README.md)                                        |
+| `cloudNodeManager.healthProbeProxyImageWindows` | Windows container image name for the health probe proxy sidecar. [Documentation](../health-probe-proxy/README.md)                                |
 
 # Maintaining the Repo
 

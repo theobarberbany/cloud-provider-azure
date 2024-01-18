@@ -19,8 +19,9 @@ package subnetclient
 
 import (
 	"context"
+	"strings"
 
-	armnetwork "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v3"
+	armnetwork "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v4"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -28,7 +29,6 @@ import (
 var beforeAllFunc func(context.Context)
 var afterAllFunc func(context.Context)
 var additionalTestCases func()
-
 var newResource *armnetwork.Subnet = &armnetwork.Subnet{}
 
 var _ = Describe("SubnetsClient", Ordered, func() {
@@ -46,7 +46,7 @@ var _ = Describe("SubnetsClient", Ordered, func() {
 			newResource, err := realClient.CreateOrUpdate(ctx, resourceGroupName, parentResourceName, resourceName, *newResource)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(newResource).NotTo(BeNil())
-			Expect(*newResource.Name).To(Equal(resourceName))
+			Expect(strings.EqualFold(*newResource.Name, resourceName)).To(BeTrue())
 		})
 	})
 

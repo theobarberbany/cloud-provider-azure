@@ -25,8 +25,8 @@ import (
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/go-autorest/autorest/azure"
 	autorestmocks "github.com/Azure/go-autorest/autorest/mocks"
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 
 	"k8s.io/apimachinery/pkg/types"
 	cloudprovider "k8s.io/cloud-provider"
@@ -95,7 +95,7 @@ func TestAttachDiskWithVMSS(t *testing.T) {
 		scaleSetName := string(test.vmssName)
 		ss, err := NewTestScaleSet(ctrl)
 		assert.NoError(t, err, test.desc)
-		testCloud := ss.cloud
+		testCloud := ss.Cloud
 		testCloud.PrimaryScaleSetName = scaleSetName
 		expectedVMSS := buildTestVMSSWithLB(scaleSetName, "vmss00-vm-", []string{testLBBackendpoolID0}, false)
 		mockVMSSClient := testCloud.VirtualMachineScaleSetsClient.(*mockvmssclient.MockInterface)
@@ -138,14 +138,14 @@ func TestAttachDiskWithVMSS(t *testing.T) {
 		diskMap := map[string]*AttachDiskOptions{}
 		for i, diskName := range test.disks {
 			options := AttachDiskOptions{
-				lun:                     int32(i),
-				diskName:                diskName,
-				cachingMode:             compute.CachingTypesReadWrite,
-				diskEncryptionSetID:     "",
-				writeAcceleratorEnabled: true,
+				Lun:                     int32(i),
+				DiskName:                diskName,
+				CachingMode:             compute.CachingTypesReadWrite,
+				DiskEncryptionSetID:     "",
+				WriteAcceleratorEnabled: true,
 			}
 			if test.inconsistentLUN {
-				options.lun = 63
+				options.Lun = 63
 			}
 
 			diskURI := fmt.Sprintf("/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Compute/disks/%s",
@@ -224,7 +224,7 @@ func TestDetachDiskWithVMSS(t *testing.T) {
 		scaleSetName := strings.ToLower(string(test.vmssName))
 		ss, err := NewTestScaleSet(ctrl)
 		assert.NoError(t, err, test.desc)
-		testCloud := ss.cloud
+		testCloud := ss.Cloud
 		testCloud.PrimaryScaleSetName = scaleSetName
 		expectedVMSS := buildTestVMSSWithLB(scaleSetName, "vmss00-vm-", []string{testLBBackendpoolID0}, false)
 		mockVMSSClient := testCloud.VirtualMachineScaleSetsClient.(*mockvmssclient.MockInterface)
@@ -354,7 +354,7 @@ func TestUpdateVMWithVMSS(t *testing.T) {
 		scaleSetName := strings.ToLower(string(test.vmssName))
 		ss, err := NewTestScaleSet(ctrl)
 		assert.NoError(t, err, test.desc)
-		testCloud := ss.cloud
+		testCloud := ss.Cloud
 		testCloud.PrimaryScaleSetName = scaleSetName
 		expectedVMSS := buildTestVMSSWithLB(scaleSetName, "vmss00-vm-", []string{testLBBackendpoolID0}, false)
 		mockVMSSClient := testCloud.VirtualMachineScaleSetsClient.(*mockvmssclient.MockInterface)
@@ -476,7 +476,7 @@ func TestGetDataDisksWithVMSS(t *testing.T) {
 		scaleSetName := string(test.nodeName)
 		ss, err := NewTestScaleSet(ctrl)
 		assert.NoError(t, err, test.desc)
-		testCloud := ss.cloud
+		testCloud := ss.Cloud
 		testCloud.PrimaryScaleSetName = scaleSetName
 		expectedVMSS := buildTestVMSSWithLB(scaleSetName, "vmss00-vm-", []string{testLBBackendpoolID0}, false)
 		mockVMSSClient := testCloud.VirtualMachineScaleSetsClient.(*mockvmssclient.MockInterface)

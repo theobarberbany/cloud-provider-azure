@@ -21,8 +21,7 @@ import (
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/services/storage/mgmt/2021-09-01/storage"
-	"github.com/Azure/go-autorest/autorest/azure"
-	"github.com/golang/mock/gomock"
+	"go.uber.org/mock/gomock"
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/blobclient/mockblobclient"
 	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/fileclient"
@@ -37,15 +36,7 @@ func TestCreateFileShare(t *testing.T) {
 	ctx, cancel := getContextWithCancel()
 	defer cancel()
 
-	cloud := &Cloud{
-		controllerCommon: &controllerCommon{
-			cloud: &Cloud{
-				Environment: azure.Environment{
-					StorageEndpointSuffix: "core.windows.net",
-				},
-			},
-		},
-	}
+	cloud := &Cloud{}
 	cloud.ResourceGroup = "rg"
 	name := "baz"
 	sku := "sku"

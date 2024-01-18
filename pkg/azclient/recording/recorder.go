@@ -64,10 +64,11 @@ var responseHeadersToRemove = []string{
 	"Retry-After",
 
 	"Content-Security-Policy-Report-Only",
+	"X-Msedge-Ref",
 }
 
 var (
-	dateMatcher   = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(.\d+)?(\+\d{2}\:\d{2})?(Z)?`)
+	dateMatcher   = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|((\+|\-)\d{2}(:?\d{2})?(:?\d{2})?))?`)
 	sshKeyMatcher = regexp.MustCompile("ssh-rsa [0-9a-zA-Z+/=]+")
 
 	// This is pretty involved, here's the breakdown of what each bit means:
@@ -217,7 +218,7 @@ func NewRecorder(cassetteName string) (*Recorder, error) {
 			i.Request.Body = strings.Replace(i.Request.Body, clientID, "clientid", -1)
 			i.Response.Body = strings.Replace(i.Response.Body, clientID, "clientid", -1)
 			if i.Request.Form.Has("client_id") {
-				i.Request.Form.Set("client_id", clientID)
+				i.Request.Form.Set("client_id", "clientid")
 			}
 		}
 
@@ -232,6 +233,22 @@ func NewRecorder(cassetteName string) (*Recorder, error) {
 		if strings.Contains(i.Response.Body, "access_token") {
 			i.Response.Body = `{"token_type":"Bearer","expires_in":86399,"ext_expires_in":86399,"access_token":"faketoken"}`
 		}
+		if strings.Contains(i.Response.Body, "-----BEGIN RSA PRIVATE KEY-----") {
+			i.Response.Body = "{\r\n  \"privateKey\": \"-----BEGIN RSA PRIVATE KEY-----\\r\\n\\r\\n-----END RSA PRIVATE KEY-----\\r\\n\",\r\n  \"publicKey\": \"ssh-rsa {KEY} generated-by-azure\",\r\n  \"id\": \"/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/AKS-CIT-SSHPUBLICKEYRESOURCE/providers/Microsoft.Compute/sshPublicKeys/testResource\"\r\n}"
+		}
+		if strings.Contains(i.Response.Body, "skiptoken") {
+			re := regexp.MustCompile(`skiptoken=(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?`)
+			i.Response.Body = string(re.ReplaceAll([]byte(i.Response.Body), []byte("skiptoken=skiptoken")))
+		}
+		if strings.Contains(i.Request.URL, "skiptoken") {
+			re := regexp.MustCompile(`skiptoken=(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}%3D%3D|[A-Za-z0-9+/]{3}%3D)?`)
+			i.Request.URL = string(re.ReplaceAll([]byte(i.Request.URL), []byte("skiptoken=skiptoken")))
+		}
+		if strings.Contains(i.Request.RequestURI, "skiptoken") {
+			re := regexp.MustCompile(`skiptoken=(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}%3D%3D|[A-Za-z0-9+/]{3}%3D)?`)
+			i.Response.Body = string(re.ReplaceAll([]byte(i.Response.Body), []byte("skiptoken=skiptoken")))
+		}
+
 		for _, header := range requestHeadersToRemove {
 			delete(i.Request.Headers, header)
 		}
@@ -295,4 +312,8 @@ func (r *Recorder) ClientSecret() string {
 
 func (r *Recorder) Stop() error {
 	return r.rec.Stop()
+}
+
+func (r *Recorder) IsNewCassette() bool {
+	return r.rec.IsNewCassette()
 }

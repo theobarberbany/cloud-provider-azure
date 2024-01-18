@@ -19,8 +19,9 @@ package routetableclient
 
 import (
 	"context"
+	"strings"
 
-	armnetwork "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v3"
+	armnetwork "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/network/armnetwork/v4"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -28,7 +29,6 @@ import (
 var beforeAllFunc func(context.Context)
 var afterAllFunc func(context.Context)
 var additionalTestCases func()
-
 var newResource *armnetwork.RouteTable = &armnetwork.RouteTable{}
 
 var _ = Describe("RouteTablesClient", Ordered, func() {
@@ -46,7 +46,22 @@ var _ = Describe("RouteTablesClient", Ordered, func() {
 			newResource, err := realClient.CreateOrUpdate(ctx, resourceGroupName, resourceName, *newResource)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(newResource).NotTo(BeNil())
-			Expect(*newResource.Name).To(Equal(resourceName))
+			Expect(strings.EqualFold(*newResource.Name, resourceName)).To(BeTrue())
+		})
+	})
+
+	When("get requests are raised", func() {
+		It("should not return error", func(ctx context.Context) {
+			newResource, err := realClient.Get(ctx, resourceGroupName, resourceName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(newResource).NotTo(BeNil())
+		})
+	})
+	When("invalid get requests are raised", func() {
+		It("should return 404 error", func(ctx context.Context) {
+			newResource, err := realClient.Get(ctx, resourceGroupName, resourceName+"notfound")
+			Expect(err).To(HaveOccurred())
+			Expect(newResource).To(BeNil())
 		})
 	})
 
@@ -55,6 +70,23 @@ var _ = Describe("RouteTablesClient", Ordered, func() {
 			newResource, err := realClient.CreateOrUpdate(ctx, resourceGroupName, resourceName, *newResource)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(newResource).NotTo(BeNil())
+		})
+	})
+
+	When("list requests are raised", func() {
+		It("should not return error", func(ctx context.Context) {
+			resourceList, err := realClient.List(ctx, resourceGroupName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(resourceList).NotTo(BeNil())
+			Expect(len(resourceList)).To(Equal(1))
+			Expect(*resourceList[0].Name).To(Equal(resourceName))
+		})
+	})
+	When("invalid list requests are raised", func() {
+		It("should return error", func(ctx context.Context) {
+			resourceList, err := realClient.List(ctx, resourceGroupName+"notfound")
+			Expect(err).To(HaveOccurred())
+			Expect(resourceList).To(BeNil())
 		})
 	})
 

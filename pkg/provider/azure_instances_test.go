@@ -29,8 +29,8 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -763,16 +763,16 @@ func TestInstanceExistsByProviderID(t *testing.T) {
 
 		mockVMSSClient := mockvmssclient.NewMockInterface(ctrl)
 		mockVMSSVMClient := mockvmssvmclient.NewMockInterface(ctrl)
-		ss.cloud.VirtualMachineScaleSetsClient = mockVMSSClient
-		ss.cloud.VirtualMachineScaleSetVMsClient = mockVMSSVMClient
+		ss.VirtualMachineScaleSetsClient = mockVMSSClient
+		ss.VirtualMachineScaleSetVMsClient = mockVMSSVMClient
 
 		expectedScaleSet := buildTestVMSS(test.scaleSet, test.scaleSet)
 		mockVMSSClient.EXPECT().List(gomock.Any(), gomock.Any()).Return([]compute.VirtualMachineScaleSet{expectedScaleSet}, test.rerr).AnyTimes()
 
-		expectedVMs, _, _ := buildTestVirtualMachineEnv(ss.cloud, test.scaleSet, "", 0, test.vmList, "succeeded", false)
+		expectedVMs, _, _ := buildTestVirtualMachineEnv(ss.Cloud, test.scaleSet, "", 0, test.vmList, "succeeded", false)
 		mockVMSSVMClient.EXPECT().List(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).Return(expectedVMs, test.rerr).AnyTimes()
 
-		mockVMsClient := ss.cloud.VirtualMachinesClient.(*mockvmclient.MockInterface)
+		mockVMsClient := ss.VirtualMachinesClient.(*mockvmclient.MockInterface)
 		mockVMsClient.EXPECT().List(gomock.Any(), gomock.Any()).Return([]compute.VirtualMachine{}, nil).AnyTimes()
 
 		exist, _ := cloud.InstanceExistsByProviderID(context.Background(), test.providerID)

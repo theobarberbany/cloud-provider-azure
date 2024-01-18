@@ -24,8 +24,8 @@ import (
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/utils/pointer"
 
@@ -199,7 +199,7 @@ func TestGetPublicIPAddress(t *testing.T) {
 			if test.expectPIPList {
 				mockPIPsClient.EXPECT().List(gomock.Any(), az.ResourceGroup).Return(test.existingPIPs, nil).MaxTimes(2)
 			}
-			pip, pipExists, err := az.getPublicIPAddress(az.ResourceGroup, "pip", azcache.CacheReadTypeDefault)
+			pip, pipExists, err := az.getPublicIPAddress(az.ResourceGroup, "PIP", azcache.CacheReadTypeDefault)
 			assert.Equal(t, test.expectedPIP, pip)
 			assert.Equal(t, test.expectExists, pipExists)
 			assert.NoError(t, err)
@@ -320,6 +320,7 @@ func TestFindMatchedPIPByLoadBalancerIP(t *testing.T) {
 		},
 	}
 	for _, test := range testCases {
+		test := test
 		t.Run(test.desc, func(t *testing.T) {
 			az := GetTestCloud(ctrl)
 

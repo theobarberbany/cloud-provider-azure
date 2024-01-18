@@ -28,13 +28,11 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/server/healthz"
-	cacheddiscovery "k8s.io/client-go/discovery/cached"
+	cacheddiscovery "k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/metadata"
 	"k8s.io/client-go/metadata/metadatainformer"
@@ -185,51 +183,50 @@ func RunWrapper(s *options.CloudControllerManagerOptions, c *cloudcontrollerconf
 			}
 
 			panic("unreachable")
+		}
+		var updateCh chan struct{}
+
+		cloudConfigFile := c.ComponentConfig.KubeCloudShared.CloudProvider.CloudConfigFile
+		if cloudConfigFile != "" {
+			klog.V(1).Infof("RunWrapper: using dynamic initialization from config file %s, starting the file watcher", cloudConfigFile)
+			updateCh = dynamic.RunFileWatcherOrDie(cloudConfigFile)
 		} else {
-			var updateCh chan struct{}
+			klog.V(1).Infof("RunWrapper: using dynamic initialization from secret %s/%s, starting the secret watcher", c.DynamicReloadingConfig.CloudConfigSecretNamespace, c.DynamicReloadingConfig.CloudConfigSecretName)
+			updateCh = dynamic.RunSecretWatcherOrDie(c)
+		}
 
-			cloudConfigFile := c.ComponentConfig.KubeCloudShared.CloudProvider.CloudConfigFile
-			if cloudConfigFile != "" {
-				klog.V(1).Infof("RunWrapper: using dynamic initialization from config file %s, starting the file watcher", cloudConfigFile)
-				updateCh = dynamic.RunFileWatcherOrDie(cloudConfigFile)
-			} else {
-				klog.V(1).Infof("RunWrapper: using dynamic initialization from secret %s/%s, starting the secret watcher", c.DynamicReloadingConfig.CloudConfigSecretNamespace, c.DynamicReloadingConfig.CloudConfigSecretName)
-				updateCh = dynamic.RunSecretWatcherOrDie(c)
-			}
+		errCh := make(chan error, 1)
+		cancelFunc := runAsync(s, errCh, h)
+		for {
+			select {
+			case <-updateCh:
+				klog.V(2).Info("RunWrapper: detected the cloud config has been updated, re-constructing the cloud controller manager")
 
-			errCh := make(chan error, 1)
-			cancelFunc := runAsync(s, errCh, h)
-			for {
-				select {
-				case <-updateCh:
-					klog.V(2).Info("RunWrapper: detected the cloud config has been updated, re-constructing the cloud controller manager")
+				// stop the previous goroutines
+				cancelFunc()
 
-					// stop the previous goroutines
-					cancelFunc()
-
-					var (
-						shouldRemainStopped bool
-						err                 error
-					)
-					if cloudConfigFile != "" {
-						// start new goroutines if needed when using config file
-						shouldRemainStopped, err = shouldDisableCloudProvider(cloudConfigFile)
-						if err != nil {
-							klog.Fatalf("RunWrapper: failed to determine if it is needed to restart all controllers: %s", err.Error())
-						}
+				var (
+					shouldRemainStopped bool
+					err                 error
+				)
+				if cloudConfigFile != "" {
+					// start new goroutines if needed when using config file
+					shouldRemainStopped, err = shouldDisableCloudProvider(cloudConfigFile)
+					if err != nil {
+						klog.Fatalf("RunWrapper: failed to determine if it is needed to restart all controllers: %s", err.Error())
 					}
-
-					if !shouldRemainStopped {
-						klog.Info("RunWrapper: restarting all controllers")
-						cancelFunc = runAsync(s, errCh, h)
-					} else {
-						klog.Warningf("All controllers are stopped!")
-					}
-
-				case err := <-errCh:
-					klog.Errorf("RunWrapper: failed to start cloud controller manager: %v", err)
-					os.Exit(1)
 				}
+
+				if !shouldRemainStopped {
+					klog.Info("RunWrapper: restarting all controllers")
+					cancelFunc = runAsync(s, errCh, h)
+				} else {
+					klog.Warningf("All controllers are stopped!")
+				}
+
+			case err := <-errCh:
+				klog.Errorf("RunWrapper: failed to start cloud controller manager: %v", err)
+				os.Exit(1)
 			}
 		}
 	}
@@ -466,17 +463,11 @@ func CreateControllerContext(s *cloudcontrollerconfig.CompletedConfig, clientBui
 		restMapper.Reset()
 	}, 30*time.Second, stop)
 
-	availableResources, err := GetAvailableResources(clientBuilder)
-	if err != nil {
-		return genericcontrollermanager.ControllerContext{}, err
-	}
-
 	ctx := genericcontrollermanager.ControllerContext{
 		ClientBuilder:                   clientBuilder,
 		InformerFactory:                 sharedInformers,
 		ObjectOrMetadataInformerFactory: informerfactory.NewInformerFactory(sharedInformers, metadataInformers),
 		RESTMapper:                      restMapper,
-		AvailableResources:              availableResources,
 		Stop:                            stop,
 		InformersStarted:                make(chan struct{}),
 		ResyncPeriod:                    ResyncPeriod(s),
@@ -494,33 +485,4 @@ func ResyncPeriod(c *cloudcontrollerconfig.CompletedConfig) func() time.Duration
 		factor := float64(n.Int64())/1000.0 + 1.0
 		return time.Duration(float64(c.ComponentConfig.Generic.MinResyncPeriod.Nanoseconds()) * factor)
 	}
-}
-
-// GetAvailableResources gets the map which contains all available resources of the apiserver
-// TODO: In general, any controller checking this needs to be dynamic so
-// users don't have to restart their controller manager if they change the apiserver.
-// Until we get there, the structure here needs to be exposed for the construction of a proper ControllerContext.
-func GetAvailableResources(clientBuilder clientbuilder.ControllerClientBuilder) (map[schema.GroupVersionResource]bool, error) {
-	client := clientBuilder.ClientOrDie("controller-discovery")
-	discoveryClient := client.Discovery()
-	_, resourceMap, err := discoveryClient.ServerGroupsAndResources()
-	if err != nil {
-		utilruntime.HandleError(fmt.Errorf("unable to get all supported resources from server: %w", err))
-	}
-	if len(resourceMap) == 0 {
-		return nil, fmt.Errorf("unable to get any supported resources from server")
-	}
-
-	allResources := map[schema.GroupVersionResource]bool{}
-	for _, apiResourceList := range resourceMap {
-		version, err := schema.ParseGroupVersion(apiResourceList.GroupVersion)
-		if err != nil {
-			return nil, err
-		}
-		for _, apiResource := range apiResourceList.APIResources {
-			allResources[version.WithResource(apiResource.Name)] = true
-		}
-	}
-
-	return allResources, nil
 }

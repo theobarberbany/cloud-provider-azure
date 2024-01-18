@@ -17,15 +17,18 @@ limitations under the License.
 package auth
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
 	"sigs.k8s.io/cloud-provider-azure/tests/e2e/utils"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	clientset "k8s.io/client-go/kubernetes"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -71,13 +74,12 @@ var _ = Describe("Azure Credential Provider", Label(utils.TestSuiteLabelCredenti
 			}
 		}()
 
-		err = utils.DockerLogin(*registry.Name)
 		Expect(err).NotTo(HaveOccurred())
 
 		image := "nginx"
-		tag, err := utils.PushImageToACR(*registry.Name, image)
-		Expect(tag).NotTo(Equal(""))
+		tag, err := tc.PushImageToACR(*registry.Name, image)
 		Expect(err).NotTo(HaveOccurred())
+		Expect(tag).NotTo(Equal(""))
 
 		acrImageURL := fmt.Sprintf("%s.azurecr.io/%s:%s", *registry.Name, image, tag)
 		podTemplate := createPodPullingFromACR(image, acrImageURL, "linux")
@@ -87,12 +89,9 @@ var _ = Describe("Azure Credential Provider", Label(utils.TestSuiteLabelCredenti
 		result, err := utils.WaitPodTo(v1.PodRunning, cs, podTemplate, ns.Name)
 		Expect(result).To(BeTrue())
 		Expect(err).NotTo(HaveOccurred())
-
-		err = utils.DockerLogout()
-		Expect(err).NotTo(HaveOccurred())
 	})
 
-	It("should be able to create an ACR cache and pull images from it", Label(utils.TestSuiteLabelOOTCredential), func() {
+	It("should be able to create an ACR cache and pull images from it", func() {
 		if os.Getenv(utils.AKSTestCCM) != "" {
 			Skip("Skip the test for AKS pipeline for now")
 		}
@@ -111,17 +110,24 @@ var _ = Describe("Azure Credential Provider", Label(utils.TestSuiteLabelCredenti
 			}
 		}()
 
-		// az acr login
-		Expect(registry.Name).NotTo(BeNil())
-		err = utils.AZACRLogin(*registry.Name)
-		Expect(err).NotTo(HaveOccurred())
-
 		testPull := func(imageURL, imageTag, os string) {
 			imageNameSlice := strings.Split(imageURL, "/")
 			imageName := imageNameSlice[len(imageNameSlice)-1]
 			acrImageURL := fmt.Sprintf("%s.azurecr.io/%s:%s", *registry.Name, imageName, imageTag)
+			err = utils.AZACRLogin()
+			Expect(err).NotTo(HaveOccurred())
 
-			err = utils.AZACRCacheCreate(*registry.Name, fmt.Sprintf("%s-cache-rule", imageName), imageURL, imageName)
+			ruleName := fmt.Sprintf("%s-cache-rule", imageName)
+			err = wait.PollUntilContextTimeout(context.Background(), 10*time.Second, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
+				if err := utils.AZACRCacheCreate(*registry.Name, ruleName, imageURL, imageName, tc.GetResourceGroup()); err != nil {
+					if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "not be found") {
+						utils.Logf("ACR cache rule %q not found, retrying...", ruleName)
+						return false, nil
+					}
+					return false, err
+				}
+				return true, nil
+			})
 			Expect(err).NotTo(HaveOccurred())
 
 			podTemplate := createPodPullingFromACR(imageName, acrImageURL, os)

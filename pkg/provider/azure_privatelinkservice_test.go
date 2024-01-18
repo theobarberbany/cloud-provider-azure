@@ -22,8 +22,8 @@ import (
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -354,6 +354,35 @@ func TestReconcilePrivateLinkService(t *testing.T) {
 			err := az.reconcilePrivateLinkService(clusterName, &service, fipConfig, test.wantPLS)
 			assert.Equal(t, test.expectedError, err != nil)
 		})
+	}
+}
+
+func TestGetPLSResourceGroup(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	testCases := []struct {
+		desc        string
+		annotations map[string]string
+		expectedRG  string
+	}{
+		{
+			desc: "getPLSResourceGroup should return resource group from annotation",
+			annotations: map[string]string{
+				consts.ServiceAnnotationPLSResourceGroup: "testRG",
+			},
+			expectedRG: "testRG",
+		},
+		{
+			desc:       "getPLSResourceGroup should return resource group from azure config when annotation is not set",
+			expectedRG: "rg",
+		},
+	}
+	for i, test := range testCases {
+		az := GetTestCloud(ctrl)
+		service := getTestServiceWithAnnotation("test", test.annotations, false, 80)
+		rg := az.getPLSResourceGroup(&service)
+		assert.Equal(t, test.expectedRG, rg, "TestCase[%d]: %s", i, test.desc)
 	}
 }
 

@@ -25,8 +25,8 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/services/compute/mgmt/2022-08-01/compute"
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 
 	v1 "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -568,7 +568,7 @@ func testGetLoadBalancerSubResourceIDs(
 				subscriptionID,
 				rgName,
 				c.loadBalancerName,
-				clusterName) + "-" + v6Suffix
+				clusterName) + "-" + consts.IPVersionIPv6String
 			subResourceIDs := getLoadBalancerSubResourceIDs(clusterName, c.loadBalancerName)
 			assert.Equal(t, expectedV4, subResourceIDs[false])
 			assert.Equal(t, expectedV6, subResourceIDs[true])
@@ -1042,7 +1042,7 @@ func TestGetStandardVMPowerStatusByNodeName(t *testing.T) {
 			expectedStatus: "Running",
 		},
 		{
-			name:     "GetPowerStatusByNodeName should get vmPowerStateStopped if vm.InstanceView is nil",
+			name:     "GetPowerStatusByNodeName should get vmPowerStateUnknown if vm.InstanceView is nil",
 			nodeName: "vm3",
 			vm: compute.VirtualMachine{
 				Name: pointer.String("vm3"),
@@ -1050,10 +1050,10 @@ func TestGetStandardVMPowerStatusByNodeName(t *testing.T) {
 					ProvisioningState: pointer.String("Succeeded"),
 				},
 			},
-			expectedStatus: vmPowerStateStopped,
+			expectedStatus: vmPowerStateUnknown,
 		},
 		{
-			name:     "GetPowerStatusByNodeName should get vmPowerStateStopped if vm.InstanceView.statuses is nil",
+			name:     "GetPowerStatusByNodeName should get vmPowerStateUnknown if vm.InstanceView.statuses is nil",
 			nodeName: "vm4",
 			vm: compute.VirtualMachine{
 				Name: pointer.String("vm4"),
@@ -1062,7 +1062,7 @@ func TestGetStandardVMPowerStatusByNodeName(t *testing.T) {
 					InstanceView:      &compute.VirtualMachineInstanceView{},
 				},
 			},
-			expectedStatus: vmPowerStateStopped,
+			expectedStatus: vmPowerStateUnknown,
 		},
 	}
 	for _, test := range testcases {
@@ -2103,13 +2103,13 @@ func TestGetPublicIPName(t *testing.T) {
 			expectedPIPName: "azure-auid-prefix-id",
 		},
 		{
-			desc: "Service PIP prefix id dualstack IPv6",
+			desc: "Service PIP prefix id dualstack lengthy IPv6",
 			svc: &v1.Service{
 				ObjectMeta: meta.ObjectMeta{
 					UID: types.UID("uid"),
 					Annotations: map[string]string{
 						consts.ServiceAnnotationPIPPrefixIDDualStack[false]: "prefix-id",
-						consts.ServiceAnnotationPIPPrefixIDDualStack[true]:  "prefix-id-ipv6",
+						consts.ServiceAnnotationPIPPrefixIDDualStack[true]:  "prefix-id-ipv6-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 					},
 				},
 				Spec: v1.ServiceSpec{
@@ -2117,7 +2117,7 @@ func TestGetPublicIPName(t *testing.T) {
 				},
 			},
 			isIPv6:          true,
-			expectedPIPName: "azure-auid-prefix-id-ipv6-IPv6",
+			expectedPIPName: "azure-auid-prefix-id-ipv6-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-IPv6",
 		},
 		{
 			desc: "Service PIP IPv6 only with existing PIP",

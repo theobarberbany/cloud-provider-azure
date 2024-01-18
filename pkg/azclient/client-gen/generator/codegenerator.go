@@ -54,7 +54,7 @@ func (Generator) RegisterMarkers(into *markers.Registry) error {
 }
 
 func (g Generator) Generate(ctx *genall.GenerationContext) error {
-	cmd := exec.Command("go", "get", "github.com/golang/mock/mockgen/model")
+	cmd := exec.Command("go", "get", "go.uber.org/mock/mockgen/model")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -79,6 +79,7 @@ func (g Generator) Generate(ctx *genall.GenerationContext) error {
 			break
 		}
 		if _, markedForGeneration := pkgMakers[enableClientGenMarker.Name]; !markedForGeneration {
+			fmt.Println("Ignored pkg", root.Name)
 			continue
 		}
 		fmt.Println("Generate code for pkg ", root.PkgPath)
@@ -122,14 +123,6 @@ func (g Generator) Generate(ctx *genall.GenerationContext) error {
 	}
 
 	if err := factoryGenerator.Generate(ctx); err != nil {
-		return err
-	}
-	fmt.Println("format code")
-	//nolint:gosec // G204 ignore this!
-	cmd = exec.Command("goimports", "-local", "sigs.k8s.io/cloud-provider-azure/pkg/azclient", "-w", ".")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
 		return err
 	}
 

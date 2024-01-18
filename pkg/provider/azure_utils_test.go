@@ -17,20 +17,18 @@ limitations under the License.
 package provider
 
 import (
-	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Azure/azure-sdk-for-go/services/network/mgmt/2022-07-01/network"
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/mock/gomock"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/pointer"
 
-	"sigs.k8s.io/cloud-provider-azure/pkg/azureclients/subnetclient/mocksubnetclient"
 	azcache "sigs.k8s.io/cloud-provider-azure/pkg/cache"
 	"sigs.k8s.io/cloud-provider-azure/pkg/consts"
 )
@@ -69,7 +67,7 @@ func TestConcurrentLockEntry(t *testing.T) {
 	testLockMap.UnlockEntry("entry1")
 }
 
-func (lm *lockMap) lockAndCallback(t *testing.T, entry string, callbackChan chan<- interface{}) {
+func (lm *LockMap) lockAndCallback(_ *testing.T, entry string, callbackChan chan<- interface{}) {
 	lm.LockEntry(entry)
 	callbackChan <- true
 }
@@ -187,78 +185,6 @@ func TestReconcileTags(t *testing.T) {
 			tags, changed := cloud.reconcileTags(testCase.currentTagsOnResource, testCase.newTags)
 			assert.Equal(t, testCase.expectedChanged, changed)
 			assert.Equal(t, testCase.expectedTags, tags)
-		})
-	}
-}
-
-func TestGetServiceAdditionalPublicIPs(t *testing.T) {
-	for _, testCase := range []struct {
-		description   string
-		service       *v1.Service
-		expectedIPs   []string
-		expectedError error
-	}{
-		{
-			description: "nil service should return empty IP list",
-		},
-		{
-			description: "service without annotation should return empty IP list",
-			service: &v1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{},
-				},
-			},
-			expectedIPs: []string{},
-		},
-		{
-			description: "service without annotation should return empty IP list",
-			service: &v1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						consts.ServiceAnnotationAdditionalPublicIPs: "",
-					},
-				},
-			},
-			expectedIPs: []string{},
-		},
-		{
-			description: "service with one IP in annotation should return expected IPs",
-			service: &v1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						consts.ServiceAnnotationAdditionalPublicIPs: "1.2.3.4 ",
-					},
-				},
-			},
-			expectedIPs: []string{"1.2.3.4"},
-		},
-		{
-			description: "service with multiple IPs in annotation should return expected IPs",
-			service: &v1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						consts.ServiceAnnotationAdditionalPublicIPs: "1.2.3.4, 2.3.4.5 ",
-					},
-				},
-			},
-			expectedIPs: []string{"1.2.3.4", "2.3.4.5"},
-		},
-		{
-			description: "service with wrong IP in annotation should report an error",
-			service: &v1.Service{
-				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{
-						consts.ServiceAnnotationAdditionalPublicIPs: "invalid",
-					},
-				},
-			},
-			expectedError: fmt.Errorf("invalid is not a valid IP address"),
-		},
-	} {
-		t.Run(testCase.description, func(t *testing.T) {
-			ips, err := getServiceAdditionalPublicIPs(testCase.service)
-			assert.Equal(t, testCase.expectedIPs, ips)
-			assert.Equal(t, testCase.expectedError, err)
 		})
 	}
 }
@@ -504,50 +430,6 @@ func TestIsNodeInVMSSVMCache(t *testing.T) {
 			result := isNodeInVMSSVMCache(test.nodeName, test.vmssVMCache)
 			assert.Equal(t, test.expectedResult, result)
 		})
-	}
-}
-
-func TestExtractVmssVMName(t *testing.T) {
-	cases := []struct {
-		description        string
-		vmName             string
-		expectError        bool
-		expectedScaleSet   string
-		expectedInstanceID string
-	}{
-		{
-			description: "wrong vmss VM name should report error",
-			vmName:      "vm1234",
-			expectError: true,
-		},
-		{
-			description: "wrong VM name separator should report error",
-			vmName:      "vm-1234",
-			expectError: true,
-		},
-		{
-			description:        "correct vmss VM name should return correct ScaleSet and instanceID",
-			vmName:             "vm_1234",
-			expectedScaleSet:   "vm",
-			expectedInstanceID: "1234",
-		},
-		{
-			description:        "correct vmss VM name with Extra Separator should return correct ScaleSet and instanceID",
-			vmName:             "vm_test_1234",
-			expectedScaleSet:   "vm_test",
-			expectedInstanceID: "1234",
-		},
-	}
-
-	for _, c := range cases {
-		ssName, instanceID, err := extractVmssVMName(c.vmName)
-		if c.expectError {
-			assert.Error(t, err, c.description)
-			continue
-		}
-
-		assert.Equal(t, c.expectedScaleSet, ssName, c.description)
-		assert.Equal(t, c.expectedInstanceID, instanceID, c.description)
 	}
 }
 
@@ -987,6 +869,7 @@ func TestIsFIPIPv6(t *testing.T) {
 		},
 	}
 	for _, tc := range testcases {
+		tc := tc
 		t.Run(tc.desc, func(t *testing.T) {
 			az := GetTestCloud(ctrl)
 			isIPv6, err := az.isFIPIPv6(&tc.svc, "rg", tc.fip)
@@ -1013,52 +896,40 @@ func TestGetResourceIDPrefix(t *testing.T) {
 	}
 }
 
-func TestFillSubnet(t *testing.T) {
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	testcases := []struct {
-		desc           string
-		subnetName     string
-		subnet         *network.Subnet
-		expectedTimes  int
-		expectedSubnet *network.Subnet
+func TestIsInternalLoadBalancer(t *testing.T) {
+	tests := []struct {
+		name     string
+		lb       network.LoadBalancer
+		expected bool
 	}{
 		{
-			desc:          "empty subnet",
-			subnetName:    "subnet0",
-			subnet:        &network.Subnet{},
-			expectedTimes: 1,
-			expectedSubnet: &network.Subnet{
-				Name: pointer.String("subnet0"),
-				ID:   pointer.String("subnet-id0"),
+			name: "internal load balancer",
+			lb: network.LoadBalancer{
+				Name: pointer.String("test-internal"),
 			},
+			expected: true,
 		},
 		{
-			desc:       "filled subnet",
-			subnetName: "subnet1",
-			subnet: &network.Subnet{
-				Name: pointer.String("subnet1"),
-				ID:   pointer.String("subnet-id1"),
+			name: "internal load balancer",
+			lb: network.LoadBalancer{
+				Name: pointer.String("TEST-INTERNAL"),
 			},
-			expectedTimes: 0,
-			expectedSubnet: &network.Subnet{
-				Name: pointer.String("subnet1"),
-				ID:   pointer.String("subnet-id1"),
+			expected: true,
+		},
+		{
+			name: "not internal load balancer",
+			lb: network.LoadBalancer{
+				Name: pointer.String("test"),
 			},
+			expected: false,
 		},
 	}
 
-	for _, tc := range testcases {
-		t.Run(tc.desc, func(t *testing.T) {
-			az := GetTestCloud(ctrl)
-			mockSubnetsClient := az.SubnetsClient.(*mocksubnetclient.MockInterface)
-			mockSubnetsClient.EXPECT().Get(gomock.Any(), az.ResourceGroup, gomock.Any(), tc.subnetName, gomock.Any()).
-				Return(*tc.expectedSubnet, nil).Times(tc.expectedTimes)
-
-			err := az.fillSubnet(tc.subnet, tc.subnetName)
-			assert.Nil(t, err)
-			assert.Equal(t, tc.expectedSubnet, tc.subnet)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			lb := test.lb
+			result := isInternalLoadBalancer(&lb)
+			assert.Equal(t, test.expected, result)
 		})
 	}
 }

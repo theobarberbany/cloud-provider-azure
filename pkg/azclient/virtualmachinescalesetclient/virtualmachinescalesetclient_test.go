@@ -19,6 +19,7 @@ package virtualmachinescalesetclient
 
 import (
 	"context"
+	"strings"
 
 	armcompute "github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/compute/armcompute/v5"
 	. "github.com/onsi/ginkgo/v2"
@@ -28,7 +29,6 @@ import (
 var beforeAllFunc func(context.Context)
 var afterAllFunc func(context.Context)
 var additionalTestCases func()
-
 var newResource *armcompute.VirtualMachineScaleSet = &armcompute.VirtualMachineScaleSet{}
 
 var _ = Describe("VirtualMachineScaleSetsClient", Ordered, func() {
@@ -46,22 +46,7 @@ var _ = Describe("VirtualMachineScaleSetsClient", Ordered, func() {
 			newResource, err := realClient.CreateOrUpdate(ctx, resourceGroupName, resourceName, *newResource)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(newResource).NotTo(BeNil())
-			Expect(*newResource.Name).To(Equal(resourceName))
-		})
-	})
-
-	When("get requests are raised", func() {
-		It("should not return error", func(ctx context.Context) {
-			newResource, err := realClient.Get(ctx, resourceGroupName, resourceName)
-			Expect(err).NotTo(HaveOccurred())
-			Expect(newResource).NotTo(BeNil())
-		})
-	})
-	When("invalid get requests are raised", func() {
-		It("should return 404 error", func(ctx context.Context) {
-			newResource, err := realClient.Get(ctx, resourceGroupName, resourceName+"notfound")
-			Expect(err).To(HaveOccurred())
-			Expect(newResource).To(BeNil())
+			Expect(strings.EqualFold(*newResource.Name, resourceName)).To(BeTrue())
 		})
 	})
 
