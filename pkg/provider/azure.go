@@ -697,6 +697,20 @@ func (az *Cloud) InitializeCloudFromConfig(ctx context.Context, config *Config, 
 	az.configAzureClients(servicePrincipalToken, multiTenantServicePrincipalToken, networkResourceServicePrincipalToken)
 
 	if az.ComputeClientFactory == nil {
+		// Note to reviewer. TODO: Rewrite once reviewed.
+		// I can't work out a nice way to tell if we are on azure stackhub here, or
+		// not. Given we only set the env var ASH_ARM_ENDPOINT in the CCMO for
+		// azure stackhub, I guess that's how we tell.
+
+		// We could put it in /pkg/azclient/cloud.go, but I think it is less
+		// surprising for it to be here. It also means that we use the endpoint to
+		// configure the client, rather than the currently faulty environment file.
+
+		// Check for  ASH_ARM_ENDPOINT - if defined, use it.
+		if armEndpoint, ok := os.LookupEnv("ASH_ARM_ENDPOINT"); ok {
+			az.ARMClientConfig.ResourceManagerEndpoint = armEndpoint
+		}
+
 		authProvider, err := azclient.NewAuthProvider(&az.ARMClientConfig, &az.AzureAuthConfig.AzureAuthConfig)
 		if err != nil {
 			return err

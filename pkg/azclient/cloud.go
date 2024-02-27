@@ -39,6 +39,11 @@ const (
 	// EnvironmentFilepathName captures the name of the environment variable containing the path to the file
 	// to be used while populating the Azure Environment.
 	EnvironmentFilepathName = "AZURE_ENVIRONMENT_FILEPATH"
+
+	// EnvironmentAshArmEndpoint captures the name of the environment variable
+	// containing the ARM endpoint on Azure StackHub
+
+	// EnvironmentAshArmEndpoint = "ASH_ARM_ENDPOINT"
 )
 
 func AzureCloudConfigFromName(cloudName string) *cloud.Configuration {
@@ -115,6 +120,23 @@ func AzureCloudConfigOverrideFromEnv(config *cloud.Configuration) (*cloud.Config
 			Audience: envConfig.TokenAudience,
 		}
 	}
+
+	// Note for reviewer: We could set it here, instead and only do so if it's
+	// not been provided in the enviornment config file. If we set it here, we
+	// will use the rest of the config file - that is currently broken. If we set
+	// it further up the call chain, we will use the endpoint.
+
+	// If we have not set the  ResourceManagerEndpoint in the environment file,
+	// and are on Azure StackHub try the ASH_ARM_ENDPOINT env var
+
+	// 	if len(envConfig.ResourceManagerEndpoint) == 0 {
+	// 		armEndpoint, ok := os.LookupEnv(EnvironmentAshArmEndpoint)
+	// 		if ok {
+	// 			config.Services[cloud.ResourceManager] = cloud.ServiceConfiguration{
+	// 				Endpoint: armEndpoint,
+	// 			}
+	// 		}
+	// 	}
 	return config, nil
 }
 
