@@ -77,6 +77,13 @@ func AzureCloudConfigFromURL(endpoint string) (*cloud.Configuration, error) {
 	}
 
 	if len(metadata) > 0 {
+		// OCPBUGS-28244: We use the endpoint to build our config, but on ASH the
+		// config returned by the endpoint does not contain the endpoint, and this is
+		// not accounted for. This ultimately unsets it for all downstream
+		// derivatives of this config, causing the bootstrap of the provider to fail.
+		if len(metadata[0].ResourceManager) == 0 {
+			metadata[0].ResourceManager = endpoint
+		}
 		return &cloud.Configuration{
 			ActiveDirectoryAuthorityHost: metadata[0].Authentication.LoginEndpoint,
 			Services: map[cloud.ServiceName]cloud.ServiceConfiguration{
